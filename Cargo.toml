@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
 inquire = { version = "0.9.4", features = ["fuzzy"] }
+nix = { version = "0.31.3", features = ["signal", "process"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "std", "layout-cache"] }
 reqwest = { version = "0.13.5", features = ["blocking", "json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
+signal-hook = "0.4.5"
+tempfile = "3.27.0"
+
+[dev-dependencies]
+serde_json = "1.0.154"
