@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+inquire = { version = "0.9.4", features = ["fuzzy"] }
+reqwest = { version = "0.13.5", features = ["blocking", "json", "query"] }
+serde = { version = "1.0.229", features = ["derive"] }
