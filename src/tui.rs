@@ -647,7 +647,7 @@ impl App {
         ])
         .areas(frame.area());
         frame.render_widget(
-            Paragraph::new("Storage Utils — Blu-ray Ripper")
+            Paragraph::new("Storage Utils — Movie Ripper")
                 .style(
                     Style::default()
                         .fg(Color::Cyan)

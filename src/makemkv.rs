@@ -14,9 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{Result, rip::RunLog};
+use crate::{rip::RunLog, Result};
 use nix::{
-    sys::signal::{Signal, killpg},
+    sys::signal::{killpg, Signal},
     unistd::Pid,
 };
 
@@ -167,7 +167,7 @@ impl std::fmt::Display for Title {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Title {} | {} | {} | Chapters: {} | {} | {}\nSegments: {}",
+            "Title {} | {} | {} | Chapters: {} | {} | \nSegments: {}",
             self.id,
             self.duration,
             self.size,
@@ -177,7 +177,6 @@ impl std::fmt::Display for Title {
                 &self.chapters
             },
             self.source,
-            self.name,
             if self.segment_map.is_empty() {
                 "—"
             } else {
