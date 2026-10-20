@@ -783,8 +783,7 @@ impl App {
             Gauge::default()
                 .block(Block::bordered().title(format!("Overall progress | {label}")))
                 .gauge_style(Style::default().fg(Color::Cyan))
-                .ratio(self.progress.unwrap_or(0.0))
-                .label(""),
+                .ratio(self.progress.unwrap_or(0.0)),
             progress,
         );
         let (title, text) = if self.log_view {
