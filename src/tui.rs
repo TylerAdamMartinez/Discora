@@ -685,7 +685,26 @@ impl App {
             let choices = self.choices();
             let items: Vec<ListItem> = choices
                 .iter()
-                .map(|(_, s)| ListItem::new(safe_text(s)))
+                .map(|(_, s)| {
+                    let text = safe_text(s);
+                    if self.phase == Phase::Titles {
+                        // Account for borders and the selection marker.
+                        let width = content.width.saturating_sub(4).max(1) as usize;
+                        let lines = text
+                            .lines()
+                            .flat_map(|line| {
+                                line.chars()
+                                    .collect::<Vec<_>>()
+                                    .chunks(width)
+                                    .map(|chunk| chunk.iter().collect::<String>())
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect::<Vec<_>>();
+                        ListItem::new(lines.join("\n"))
+                    } else {
+                        ListItem::new(text)
+                    }
+                })
                 .collect();
             let title = match self.phase {
                 Phase::Movies => "Movie",
@@ -746,26 +765,26 @@ impl App {
         let elapsed = self.elapsed.as_secs();
         let eta = self
             .progress
-            .filter(|p| *p > 0.0 && *p < 1.0)
-            .filter(|_| elapsed >= 2)
+            .filter(|p| *p > 0.0 && *p <= 1.0)
+            .filter(|p| elapsed >= 2 || *p == 1.0)
             .map(|p| duration((elapsed as f64 * (1.0 - p) / p) as u64))
             .unwrap_or_else(|| "—".into());
         let label = self
             .progress
             .map(|p| {
                 format!(
-                    "{:.1}% | Elapsed {} | ETA {eta}",
+                    "{:.1}% | Elapsed {} | Remaining {eta}",
                     p * 100.0,
                     duration(elapsed)
                 )
             })
-            .unwrap_or_else(|| format!("Waiting for progress | Elapsed {}", duration(elapsed)));
+            .unwrap_or_else(|| format!("—% | Elapsed {} | Remaining —", duration(elapsed)));
         frame.render_widget(
             Gauge::default()
-                .block(Block::bordered().title("Overall progress"))
+                .block(Block::bordered().title(format!("Overall progress | {label}")))
                 .gauge_style(Style::default().fg(Color::Cyan))
                 .ratio(self.progress.unwrap_or(0.0))
-                .label(label),
+                .label(""),
             progress,
         );
         let (title, text) = if self.log_view {

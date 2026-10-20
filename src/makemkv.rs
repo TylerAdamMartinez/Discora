@@ -146,6 +146,8 @@ pub struct Title {
     pub duration: String,
     pub size: String,
     pub source: String,
+    pub chapters: String,
+    pub segment_map: String,
 }
 
 impl Title {
@@ -165,8 +167,22 @@ impl std::fmt::Display for Title {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Title {} | {} | {} | {} | {}",
-            self.id, self.duration, self.size, self.source, self.name
+            "Title {} | {} | {} | Chapters: {} | {} | {}\nSegments: {}",
+            self.id,
+            self.duration,
+            self.size,
+            if self.chapters.is_empty() {
+                "—"
+            } else {
+                &self.chapters
+            },
+            self.source,
+            self.name,
+            if self.segment_map.is_empty() {
+                "—"
+            } else {
+                &self.segment_map
+            }
         )
     }
 }
@@ -274,9 +290,11 @@ impl MakeMkv {
                     });
                     match attribute {
                         2 => title.name = value,
+                        8 => title.chapters = value,
                         9 => title.duration = value,
                         10 => title.size = value,
                         16 => title.source = value,
+                        26 => title.segment_map = value,
                         _ => {}
                     }
                 }

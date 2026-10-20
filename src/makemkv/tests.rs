@@ -70,6 +70,8 @@ print('TINFO:3,2,0,"Main movie"')
 print('TINFO:3,9,0,"1:48:55"')
 print('TINFO:3,10,0,"25.3 GB"')
 print('TINFO:3,16,0,"00800.mpls"')
+print('TINFO:3,8,0,"16"')
+print('TINFO:3,26,0,"501,502,503"')
 "#,
     );
     let cancel = AtomicBool::new(false);
@@ -80,6 +82,11 @@ print('TINFO:3,16,0,"00800.mpls"')
     assert_eq!(titles.iter().map(|t| t.id).collect::<Vec<_>>(), [3, 0]);
     assert_eq!(titles[0].seconds(), 6535);
     assert_eq!(titles[0].source, "00800.mpls");
+    assert_eq!(titles[0].chapters, "16");
+    assert_eq!(titles[0].segment_map, "501,502,503");
+    assert!(titles[0].to_string().contains("Chapters: 16"));
+    assert!(titles[0].to_string().contains("Segments: 501,502,503"));
+    assert!(titles[1].to_string().contains("Chapters: —"));
 }
 
 #[test]
