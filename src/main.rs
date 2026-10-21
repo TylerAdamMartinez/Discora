@@ -34,7 +34,6 @@ enum Commands {
     /// Rename single MKVs in immediate child directories to match their folder names
     FileCleanup { path: PathBuf },
     /// Search TMDB and create a movie or TV directory
-    #[command(alias = "mkdir")]
     Mkdir {
         #[arg(default_value = "/mnt/storage/Movies")]
         movies_path: PathBuf,
