@@ -8,6 +8,21 @@ fn clean_name(name: &str) -> String {
     name.replace(['\n', '\r'], " ")
 }
 
+/// Validate both libraries before changing either, and process shared roots once.
+pub fn library_cleanup(movies: &Path, tv: &Path) -> Result<()> {
+    for root in [movies, tv] {
+        if !root.is_dir() {
+            return Err(format!("Not a directory: {}", root.display()).into());
+        }
+    }
+    let same_root = fs::canonicalize(movies)? == fs::canonicalize(tv)?;
+    file_cleanup(movies)?;
+    if !same_root {
+        file_cleanup(tv)?;
+    }
+    Ok(())
+}
+
 pub fn file_cleanup(root: &Path) -> Result<()> {
     if !root.is_dir() {
         return Err(format!("Not a directory: {}", root.display()).into());
@@ -78,6 +93,25 @@ pub fn named_mkv(folder: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleans_both_libraries_and_validates_before_changing_any_files() {
+        let root = tempfile::tempdir().unwrap();
+        let movies = root.path().join("movies");
+        let tv = root.path().join("tv");
+        for library in [&movies, &tv] {
+            let folder = library.join("Title (2000)");
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("title00.mkv"), "video").unwrap();
+        }
+        assert!(library_cleanup(&movies, &root.path().join("missing")).is_err());
+        assert!(movies.join("Title (2000)/title00.mkv").exists());
+        library_cleanup(&movies, &tv).unwrap();
+        for library in [&movies, &tv] {
+            assert!(library.join("Title (2000)/Title (2000).mkv").exists());
+        }
+        library_cleanup(&movies, &movies).unwrap();
+    }
 
     #[test]
     fn legacy_cleanup_renames_one_mkv_and_skips_multiple_mkvs() {
