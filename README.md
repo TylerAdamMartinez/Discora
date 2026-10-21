@@ -9,7 +9,8 @@ and audio/subtitle preferences, and ensure your user can access the optical driv
 Set `TMDB_TOKEN` to your TMDB API read access token, then run:
 
 ```sh
-cargo run -- rip
+cargo run
+# The explicit `rip` command is also supported.
 # Choose a particular MakeMKV drive index or a different library root:
 cargo run -- rip --disc 0 --movies-path "/mnt/storage/Movies"
 ```

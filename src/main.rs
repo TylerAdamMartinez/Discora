@@ -26,7 +26,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -34,7 +34,7 @@ enum Commands {
     /// Rename single MKVs in immediate child directories to match their folder names
     FileCleanup { path: PathBuf },
     /// Search TMDB and create a movie or TV directory
-    #[command(alias = "mk-movie-dir")]
+    #[command(alias = "mkdir")]
     Mkdir {
         #[arg(default_value = "/mnt/storage/Movies")]
         movies_path: PathBuf,
@@ -50,7 +50,7 @@ enum Commands {
     },
 }
 
-fn mk_movie_dir(movies_root: &Path, tv_root: &Path) -> Result<()> {
+fn mkdir(movies_root: &Path, tv_root: &Path) -> Result<()> {
     let token = env::var("TMDB_TOKEN").map_err(|_| "Set TMDB_TOKEN first")?;
 
     let media_type = Select::new("Choose media type:", vec!["Movie", "TV Show"]).prompt()?;
@@ -107,12 +107,15 @@ fn mk_movie_dir(movies_root: &Path, tv_root: &Path) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
+    match Cli::parse().command.unwrap_or_else(|| Commands::Rip {
+        disc: None,
+        movies_path: PathBuf::from("/mnt/storage/Movies"),
+    }) {
         Commands::FileCleanup { path } => file_cleanup(&path),
         Commands::Mkdir {
             movies_path,
             tv_path,
-        } => mk_movie_dir(&movies_path, &tv_path),
+        } => mkdir(&movies_path, &tv_path),
         Commands::Rip { disc, movies_path } => tui::run(disc, movies_path),
     }
 }
