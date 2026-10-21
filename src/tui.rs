@@ -837,23 +837,21 @@ impl App {
             );
         }
         let elapsed = self.elapsed.as_secs();
-        let eta = self
+        let remaining = self
             .progress
             .filter(|p| *p > 0.0 && *p <= 1.0)
             .filter(|p| elapsed >= 2 || *p == 1.0)
             .map(|p| duration((elapsed as f64 * (1.0 - p) / p) as u64))
-            .unwrap_or_else(|| "—".into());
-        let progress_label = self
+            .unwrap_or_else(|| "-:--:--".to_string());
+        let percentage = self
             .progress
-            .map(|p| {
-                format!(
-                    "{:.2}% | Elapsed {} | Remaining {eta}",
-                    p * 100.0,
-                    duration(elapsed)
-                )
-            })
-            .unwrap_or_else(|| format!("—% | Elapsed {} | Remaining —", duration(elapsed)));
-        let progress_block = Block::bordered().title(format!("Current progress {progress_label}"));
+            .map(|p| format!("{:>6.2}%", p * 100.0))
+            .unwrap_or_else(|| " --.--%".to_string());
+        let progress_label = format!(
+            "{percentage} | Elapsed {} | Remaining {remaining}",
+            duration(elapsed)
+        );
+        let progress_block = Block::bordered().title(format!("Progress {progress_label}"));
         let bar = progress_block.inner(progress);
         frame.render_widget(progress_block, progress);
         let filled_width =
