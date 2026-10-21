@@ -138,6 +138,7 @@ pub enum Destination {
 pub struct MountedDestination {
     pub root: PathBuf,
     pub label: String,
+    pub remote: Option<Remote>,
     mount: Option<Mount>,
 }
 
@@ -147,6 +148,7 @@ impl MountedDestination {
             Destination::Local(root) => Ok(Self {
                 label: root.display().to_string(),
                 root,
+                remote: None,
                 mount: None,
             }),
             Destination::Sshfs(remote) => {
@@ -163,6 +165,7 @@ impl MountedDestination {
                         remote.host,
                         remote.movies_path.trim_end_matches('/')
                     ),
+                    remote: Some(remote),
                     mount: Some(mount),
                 })
             }

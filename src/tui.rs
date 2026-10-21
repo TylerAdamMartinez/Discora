@@ -148,6 +148,7 @@ struct App {
     forced_disc: Option<u32>,
     root: PathBuf,
     root_label: String,
+    remote: Option<crate::destination::Remote>,
     destination: Option<PathBuf>,
     token: String,
     makemkv: MakeMkv,
@@ -201,15 +202,7 @@ pub fn run(disc: Option<u32>, destination: crate::destination::Destination) -> R
             let _ = log.write("sshfs", &error.to_string());
             eprintln!("Run log: {}", log.path.display());
         })?;
-    let result = run_mounted(
-        disc,
-        mounted.root.clone(),
-        mounted.label.clone(),
-        token,
-        makemkv,
-        log,
-        &terminated,
-    );
+    let result = run_mounted(disc, &mounted, token, makemkv, log, &terminated);
     let cleanup = mounted.close();
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
@@ -221,15 +214,15 @@ pub fn run(disc: Option<u32>, destination: crate::destination::Destination) -> R
 
 fn run_mounted(
     disc: Option<u32>,
-    root: PathBuf,
-    root_label: String,
+    mounted: &crate::destination::MountedDestination,
     token: String,
     makemkv: MakeMkv,
     log: RunLog,
     terminated: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut app = App::new(disc, root, token, makemkv, log);
-    app.root_label = root_label;
+    let mut app = App::new(disc, mounted.root.clone(), token, makemkv, log);
+    app.root_label = mounted.label.clone();
+    app.remote = mounted.remote.clone();
     let result = {
         let _restore = TerminalGuard;
         let mut terminal = ratatui::try_init()?;
@@ -263,6 +256,7 @@ impl App {
             title: None,
             forced_disc: disc,
             root_label: root.display().to_string(),
+            remote: None,
             root,
             destination: None,
             token,
@@ -696,7 +690,7 @@ impl App {
     fn draw(&self, frame: &mut Frame) {
         let [header, context, content, progress, logs, footer] = Layout::vertical([
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(if self.log_view { 0 } else { 5 }),
             Constraint::Length(3),
             if self.log_view {
@@ -723,13 +717,31 @@ impl App {
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_else(|| "No movie selected".into());
-        let destination = self
-            .destination
-            .as_ref()
-            .map(|p| self.display_path(p))
-            .unwrap_or_else(|| self.root_label.clone());
+        let path = self.destination.as_ref().unwrap_or(&self.root);
+        let (mode, destination) = match &self.remote {
+            Some(remote) => (
+                format!(
+                    "SSHFS ({}@{}, port {})",
+                    remote.username, remote.host, remote.port
+                ),
+                path.strip_prefix(&self.root)
+                    .map(|relative| {
+                        if relative.as_os_str().is_empty() {
+                            remote.movies_path.clone()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                remote.movies_path.trim_end_matches('/'),
+                                relative.display()
+                            )
+                        }
+                    })
+                    .unwrap_or_else(|_| path.display().to_string()),
+            ),
+            None => ("Local".into(), self.display_path(path)),
+        };
         frame.render_widget(
-            Paragraph::new(safe_text(&format!("{movie}\n{destination}"))),
+            Paragraph::new(safe_text(&format!("{movie} -> {mode} {destination}"))),
             context,
         );
         if self.log_view {
@@ -831,17 +843,17 @@ impl App {
             .filter(|p| elapsed >= 2 || *p == 1.0)
             .map(|p| duration((elapsed as f64 * (1.0 - p) / p) as u64))
             .unwrap_or_else(|| "—".into());
-        let label = self
+        let progress_label = self
             .progress
             .map(|p| {
                 format!(
-                    "{:.1}% | Elapsed {} | Remaining {eta}",
+                    "{:.2}% | Elapsed {} | Remaining {eta}",
                     p * 100.0,
                     duration(elapsed)
                 )
             })
             .unwrap_or_else(|| format!("—% | Elapsed {} | Remaining —", duration(elapsed)));
-        let progress_block = Block::bordered().title(format!("Overall progress | {label}"));
+        let progress_block = Block::bordered().title(format!("Current progress {progress_label}"));
         let bar = progress_block.inner(progress);
         frame.render_widget(progress_block, progress);
         let filled_width =
@@ -932,6 +944,76 @@ fn matches_filter(text: &str, filter: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movie_header_shows_destination_on_one_row_without_a_gap() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = RunLog::create(temp.path()).unwrap();
+        let mut app = App::new(
+            None,
+            PathBuf::from("/Movies"),
+            String::new(),
+            MakeMkv::new("/nonexistent".into()),
+            log,
+        );
+        app.phase = Phase::Busy;
+        for port in [None, Some(22), Some(2222)] {
+            app.remote = port.map(|port| crate::destination::Remote {
+                host: "server".into(),
+                port,
+                username: "friend".into(),
+                movies_path: "/media/Movies/".into(),
+                identity_file: Some("/home/friend/.ssh/id_ed25519".into()),
+            });
+            for selected in [false, true] {
+                app.movie = selected.then(|| {
+                    serde_json::from_str(
+                        r#"{"id":436270,"title":"Black Adam","release_date":"2022-01-01"}"#,
+                    )
+                    .unwrap()
+                });
+                app.destination = selected.then(|| app.root.join("Black Adam (2022)"));
+                let movie = if selected {
+                    "Black Adam (2022) [TMDB: 436270]"
+                } else {
+                    "No movie selected"
+                };
+                let mode = port
+                    .map(|port| format!("SSHFS (friend@server, port {port})"))
+                    .unwrap_or_else(|| "Local".into());
+                let root = if port.is_some() {
+                    "/media/Movies"
+                } else {
+                    "/Movies"
+                };
+                let path = if selected {
+                    format!("{root}/Black Adam (2022)")
+                } else if port.is_some() {
+                    format!("{root}/")
+                } else {
+                    root.into()
+                };
+                let expected = format!("{movie} -> {mode} {path}");
+                for width in [220, 40] {
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24))
+                            .unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let row = |y| {
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    };
+                    assert_eq!(
+                        row(3).trim_end(),
+                        expected.chars().take(width as usize).collect::<String>()
+                    );
+                    assert!(row(4).contains("Workflow"));
+                }
+            }
+        }
+    }
 
     fn wait_for_task(app: &mut App) {
         let deadline = Instant::now() + Duration::from_secs(5);
