@@ -14,9 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{rip::RunLog, Result};
+use crate::{Result, rip::RunLog};
 use nix::{
-    sys::signal::{killpg, Signal},
+    sys::signal::{Signal, killpg},
     unistd::Pid,
 };
 

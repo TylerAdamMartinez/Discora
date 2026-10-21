@@ -149,7 +149,7 @@ fn failed_and_unexpected_rips_delete_only_current_staging_and_keep_logs() {
         let (root, mkv, log) = fake(body);
         let movie = root.path().join("Movie (2005)");
         fs::create_dir_all(&movie).unwrap();
-        let old_staging = movie.join(".storage-utils-rip-old");
+        let old_staging = movie.join(".discora-rip-old");
         fs::create_dir(&old_staging).unwrap();
         fs::write(old_staging.join("old.mkv"), "old partial").unwrap();
         assert!(
@@ -210,7 +210,7 @@ fn missing_executable_and_scan_failure_are_errors() {
         mkv.drives(&AtomicBool::new(false), &log, &mut |_| {})
             .is_err()
     );
-    let missing = MakeMkv::new(PathBuf::from("/nonexistent/storage-utils-makemkvcon"));
+    let missing = MakeMkv::new(PathBuf::from("/nonexistent/discora-makemkvcon"));
     assert!(
         missing
             .titles(0, &AtomicBool::new(false), &log, &mut |_| {})

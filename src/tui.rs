@@ -18,7 +18,7 @@ use crossterm::event::{
 };
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, HorizontalAlignment, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -647,7 +647,8 @@ impl App {
         ])
         .areas(frame.area());
         frame.render_widget(
-            Paragraph::new("Storage Utils — Movie Ripper")
+            Paragraph::new("Discora")
+                .alignment(HorizontalAlignment::Center)
                 .style(
                     Style::default()
                         .fg(Color::Cyan)

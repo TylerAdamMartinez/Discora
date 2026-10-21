@@ -1,6 +1,9 @@
-# Storage Utils
+# Discora
 
-Rust utilities for movie/TV directory creation, headless movie ripping, and MKV naming.
+Discora is a Rust CLI for movie/TV directory creation, headless movie ripping, and MKV naming.
+
+Install the CLI from this repository with `cargo install --path .`, then run
+`discora` to start the interactive movie ripper. Use `discora --help` to see all commands.
 
 ## Rip a movie
 
@@ -38,12 +41,12 @@ ripping are not included.
 | PageUp/PageDown, Home/End | Navigate the full on-disk log |
 | R in logs | Refresh the current page |
 
-Logs are retained at `$XDG_STATE_HOME/storage-utils/logs`, or
-`~/.local/state/storage-utils/logs` when `XDG_STATE_HOME` is unset. The log path is
+Logs are retained at `$XDG_STATE_HOME/discora/logs`, or
+`~/.local/state/discora/logs` when `XDG_STATE_HOME` is unset. The log path is
 shown in the interface and printed on exit. Only a bounded recent log buffer is
 kept in memory; the full viewer reads the disk log in pages.
 
-Each rip writes to a unique `.storage-utils-rip-*` directory inside the movie
+Each rip writes to a unique `.discora-rip-*` directory inside the movie
 directory. After MakeMKV succeeds, exactly one nonempty, regular MKV must exist
 before it is published. Existing final filenames are never replaced, including
 when another process creates one during the rip. Publication uses a hard link

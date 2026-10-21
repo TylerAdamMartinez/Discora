@@ -1,6 +1,6 @@
 [package]
-name = "Storage-Utils"
-version = "0.1.0"
+name = "discora"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]

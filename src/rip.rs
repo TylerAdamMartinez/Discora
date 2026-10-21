@@ -49,7 +49,7 @@ pub fn log_directory() -> Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state")))
         .ok_or("Set HOME or XDG_STATE_HOME to a writable directory for logs")?;
-    Ok(state.join("storage-utils/logs"))
+    Ok(state.join("discora/logs"))
 }
 
 /// Owns only the unique directory created for this attempt. Explicit close reports
@@ -75,7 +75,7 @@ impl Attempt {
             Err(error) => return Err(error.into()),
         }
         let directory = tempfile::Builder::new()
-            .prefix(".storage-utils-rip-")
+            .prefix(".discora-rip-")
             .tempdir_in(movie)?;
         Ok(Self {
             directory,

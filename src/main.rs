@@ -20,7 +20,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 #[derive(Parser)]
 #[command(
-    name = "storage-utils",
+    name = "discora",
     about = "Movie directories, headless disc ripping, and file cleanup",
     version
 )]

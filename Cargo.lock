@@ -3,22 +3,6 @@
 version = 4
 
 [[package]]
-name = "Storage-Utils"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "inquire",
- "nix",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "signal-hook 0.4.5",
- "tempfile",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -414,6 +398,22 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "discora"
+version = "0.1.1"
+dependencies = [
+ "clap",
+ "crossterm",
+ "inquire",
+ "nix",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "signal-hook 0.4.5",
+ "tempfile",
 ]
 
 [[package]]
