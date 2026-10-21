@@ -1,19 +1,22 @@
 use super::*;
 use crate::{files, rip};
-use std::fs;
+use std::{fs, time::Instant};
 
 fn fake(body: &str) -> (tempfile::TempDir, MakeMkv, RunLog) {
     let root = tempfile::tempdir().unwrap();
     let executable = root.path().join("fake makemkvcon");
     fs::write(
         &executable,
-        format!("#!/usr/bin/python3\nimport os, sys, time\nfrom pathlib import Path\n{body}\n"),
+        format!("import os, sys, time\nfrom pathlib import Path\n{body}\n"),
     )
     .unwrap();
     let log = RunLog::create(root.path()).unwrap();
     // Invoke the interpreter directly: unrelated parallel forks can briefly inherit
     // a fixture writer fd, causing ETXTBSY if the script itself is exec'd.
-    let mkv = MakeMkv::with_arguments("/usr/bin/python3".into(), vec![executable.into_os_string()]);
+    let mkv = MakeMkv::with_arguments(
+        crate::test_support::python(),
+        vec![executable.into_os_string()],
+    );
     (root, mkv, log)
 }
 
@@ -113,7 +116,7 @@ print('MSG:5005,0,0,"1 titles saved",""')
     let mut events = Vec::new();
     let path = rip::run(
         &mkv,
-        &movie,
+        rip::Output::local(&movie),
         2,
         7,
         &AtomicBool::new(false),
@@ -155,12 +158,12 @@ fn failed_and_unexpected_rips_delete_only_current_staging_and_keep_logs() {
         assert!(
             rip::run(
                 &mkv,
-                &movie,
+                rip::Output::local(&movie),
                 0,
                 0,
                 &AtomicBool::new(false),
                 &log,
-                &mut |_| {}
+                &mut |_| {},
             )
             .is_err()
         );
@@ -185,16 +188,24 @@ while True:
     let movie = root.path().join("Movie (2005)");
     let cancel = AtomicBool::new(false);
     let mut pid = None;
-    let result = rip::run(&mkv, &movie, 0, 0, &cancel, &log, &mut |event| {
-        if let Event::Log(line) = event
-            && let Some(value) = line.strip_prefix("READY:")
-        {
-            pid = Some(value.parse::<i32>().unwrap());
-            cancel.store(true, Ordering::Relaxed);
-        }
-    });
+    let result = rip::run(
+        &mkv,
+        rip::Output::local(&movie),
+        0,
+        0,
+        &cancel,
+        &log,
+        &mut |event| {
+            if let Event::Log(line) = event
+                && let Some(value) = line.strip_prefix("READY:")
+            {
+                pid = Some(value.parse::<i32>().unwrap());
+                cancel.store(true, Ordering::Relaxed);
+            }
+        },
+    );
     assert!(result.unwrap_err().to_string().contains("Canceled"));
-    assert!(nix::sys::signal::kill(Pid::from_raw(pid.unwrap()), None).is_err());
+    assert!(!crate::test_support::process_exists(pid.unwrap() as u32));
     assert_eq!(fs::read_dir(movie).unwrap().count(), 0);
     assert!(log.path.exists());
 }
@@ -233,12 +244,12 @@ sys.exit(1)
     assert!(
         rip::run(
             &mkv,
-            &movie,
+            rip::Output::local(&movie),
             0,
             0,
             &AtomicBool::new(false),
             &log,
-            &mut |_| {}
+            &mut |_| {},
         )
         .is_err()
     );

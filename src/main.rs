@@ -3,8 +3,16 @@ mod destination;
 mod files;
 mod makemkv;
 mod metadata;
+mod platform;
+mod process;
 mod rip;
+#[cfg(any(windows, test))]
+mod sftp;
+#[cfg(test)]
+mod test_support;
 mod tui;
+#[cfg(any(windows, test))]
+mod windows_remote;
 
 use clap::{Parser, Subcommand};
 use files::{file_cleanup, library_cleanup};
@@ -33,6 +41,9 @@ struct Cli {
     /// TV show library root (overrides discora.toml)
     #[arg(long, global = true, value_parser = config::parse_path)]
     tv_shows_path: Option<PathBuf>,
+    /// Explicit MakeMKV console executable (otherwise discovered automatically)
+    #[arg(long, global = true)]
+    makemkv_path: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -168,7 +179,7 @@ fn main() -> Result<()> {
                 paths.tv_shows_path.as_deref().expect("resolved TV path"),
             )
         }
-        Commands::Rip { disc } => tui::run(disc, config::resolve_rip(overrides)?),
+        Commands::Rip { disc } => tui::run(disc, config::resolve_rip(overrides)?, cli.makemkv_path),
     }
 }
 
@@ -204,6 +215,30 @@ mod cli_tests {
             vec!["discora", "file-cleanup", path],
         ] {
             Cli::try_parse_from(args).and_then(Cli::checked).unwrap();
+        }
+    }
+
+    #[test]
+    fn makemkv_override_is_global_and_preserves_spaces() {
+        for args in [
+            vec![
+                "discora",
+                "--makemkv-path",
+                "custom folder/makemkvcon.exe",
+                "rip",
+            ],
+            vec![
+                "discora",
+                "rip",
+                "--makemkv-path",
+                "custom folder/makemkvcon.exe",
+            ],
+            vec!["discora", "--makemkv-path", "custom folder/makemkvcon.exe"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args).unwrap().makemkv_path,
+                Some(PathBuf::from("custom folder/makemkvcon.exe"))
+            );
         }
     }
 

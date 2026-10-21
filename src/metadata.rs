@@ -76,16 +76,46 @@ pub fn search_tmdb(
 }
 
 pub fn sanitize_folder_name(name: &str) -> String {
-    name.chars()
+    sanitize_name(name, cfg!(windows))
+}
+
+fn sanitize_name(name: &str, windows: bool) -> String {
+    let clean = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | '\n' | '\r' | '\0' => ' ',
             ':' => '-',
+            '<' | '>' | '"' | '|' | '?' | '*' if windows => ' ',
+            c if windows && c.is_control() => ' ',
             _ => c,
         })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    if !windows {
+        return clean;
+    }
+    let mut clean = clean.trim_end_matches(['.', ' ']).to_owned();
+    let stem = clean
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|n| {
+                matches!(
+                    n,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        });
+    if reserved {
+        clean.insert(0, '_');
+    }
+    clean
 }
 
 pub fn movie_destination(root: &Path, movie: &Media) -> Result<PathBuf> {
@@ -100,6 +130,16 @@ pub fn movie_destination(root: &Path, movie: &Media) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_names_are_safe_and_valid_names_are_preserved() {
+        assert_eq!(sanitize_name("A <Movie>?*|\"\u{1}. ", true), "A Movie");
+        for name in ["CON", "nul.txt", "COM1", "LPT²"] {
+            assert!(sanitize_name(name, true).starts_with('_'));
+        }
+        assert_eq!(sanitize_name("Good Movie", true), "Good Movie");
+        assert_eq!(sanitize_name("A?", false), "A?");
+    }
 
     #[test]
     fn movie_and_tv_results_keep_existing_naming_and_reject_missing_years() {

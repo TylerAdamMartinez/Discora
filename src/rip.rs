@@ -1,5 +1,4 @@
 use std::{
-    env,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -43,13 +42,23 @@ impl RunLog {
 }
 
 pub fn log_directory() -> Result<PathBuf> {
-    let state = env::var_os("XDG_STATE_HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/state")))
-        .ok_or("Set HOME or XDG_STATE_HOME to a writable directory for logs")?;
-    Ok(state.join("discora/logs"))
+    #[cfg(windows)]
+    {
+        Ok(crate::platform::app_data("LOCALAPPDATA")
+            .or_else(dirs::data_local_dir)
+            .ok_or("Cannot locate LOCALAPPDATA for logs")?
+            .join("discora/logs"))
+    }
+    #[cfg(unix)]
+    {
+        let state = std::env::var_os("XDG_STATE_HOME")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| dirs::home_dir().map(|p| p.join(".local/state")))
+            .ok_or("Cannot locate the user state directory for logs")?;
+        Ok(state.join("discora/logs"))
+    }
 }
 
 /// Owns only the unique directory created for this attempt. Explicit close reports
@@ -87,7 +96,11 @@ impl Attempt {
         self.directory.path()
     }
 
-    fn publish(&self, cancel: &AtomicBool) -> Result<PathBuf> {
+    fn publish(
+        &self,
+        cancel: &AtomicBool,
+        #[cfg(windows)] publisher: Option<&crate::windows_remote::Publisher>,
+    ) -> Result<PathBuf> {
         makemkv::check_cancel(cancel)?;
         let mut mkvs = Vec::new();
         for entry in fs::read_dir(self.path())? {
@@ -110,12 +123,28 @@ impl Attempt {
             )
             .into());
         }
-        let file = File::open(&mkvs[0])?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&mkvs[0])?;
         if file.metadata()?.len() == 0 {
             return Err("MakeMKV produced an empty MKV".into());
         }
+        #[cfg(windows)]
+        if publisher.is_none() {
+            file.sync_all()?;
+        }
+        #[cfg(unix)]
         file.sync_all()?;
+        drop(file);
         makemkv::check_cancel(cancel)?;
+        #[cfg(windows)]
+        if let Some(publisher) = publisher {
+            publisher.publish(&mkvs[0], &self.destination, cancel)?;
+        } else {
+            publish_mkv(&mkvs[0], &self.destination)?;
+        }
+        #[cfg(unix)]
         publish_mkv(&mkvs[0], &self.destination)?;
         Ok(self.destination.clone())
     }
@@ -132,9 +161,32 @@ impl Attempt {
     }
 }
 
+pub struct Output<'a> {
+    movie: &'a Path,
+    #[cfg(windows)]
+    publisher: Option<&'a crate::windows_remote::Publisher>,
+}
+impl<'a> Output<'a> {
+    pub fn local(movie: &'a Path) -> Self {
+        Self {
+            movie,
+            #[cfg(windows)]
+            publisher: None,
+        }
+    }
+    #[cfg(windows)]
+    pub fn with_publisher(
+        mut self,
+        publisher: Option<&'a crate::windows_remote::Publisher>,
+    ) -> Self {
+        self.publisher = publisher;
+        self
+    }
+}
+
 pub fn run(
     makemkv: &MakeMkv,
-    movie: &Path,
+    output: Output<'_>,
     disc: u32,
     title: u32,
     cancel: &AtomicBool,
@@ -142,7 +194,7 @@ pub fn run(
     emit: &mut impl FnMut(Event),
 ) -> Result<PathBuf> {
     makemkv::check_cancel(cancel)?;
-    let attempt = Attempt::create(movie)?;
+    let attempt = Attempt::create(output.movie)?;
     let result = (|| {
         log.write("staging", &attempt.path().display().to_string())?;
         emit(Event::Log(format!(
@@ -150,7 +202,11 @@ pub fn run(
         )));
         makemkv.rip(disc, title, attempt.path(), cancel, log, emit)?;
         emit(Event::Operation("Finalizing movie file".into()));
-        let destination = attempt.publish(cancel)?;
+        let destination = attempt.publish(
+            cancel,
+            #[cfg(windows)]
+            output.publisher,
+        )?;
         log.write("completed", &destination.display().to_string())
             .map_err(|error| {
                 format!(
@@ -185,7 +241,15 @@ mod tests {
         fs::write(&final_path, "existing movie").unwrap();
         let extra = movie.join("extras.mkv");
         fs::write(&extra, "extra").unwrap();
-        assert!(attempt.publish(&AtomicBool::new(false)).is_err());
+        assert!(
+            attempt
+                .publish(
+                    &AtomicBool::new(false),
+                    #[cfg(windows)]
+                    None
+                )
+                .is_err()
+        );
         attempt.close().unwrap();
         assert!(!staging.exists());
         assert_eq!(fs::read_to_string(final_path).unwrap(), "existing movie");
@@ -201,7 +265,11 @@ mod tests {
             for id in 0..count {
                 fs::write(attempt.path().join(format!("{id}.MKV")), "movie").unwrap();
             }
-            let result = attempt.publish(&AtomicBool::new(false));
+            let result = attempt.publish(
+                &AtomicBool::new(false),
+                #[cfg(windows)]
+                None,
+            );
             assert_eq!(result.is_ok(), count == 1);
             attempt.close().unwrap();
         }
@@ -209,10 +277,19 @@ mod tests {
         let movie = root.path().join("Example (2005)");
         let attempt = Attempt::create(&movie).unwrap();
         fs::write(attempt.path().join("empty.mkv"), "").unwrap();
-        assert!(attempt.publish(&AtomicBool::new(false)).is_err());
+        assert!(
+            attempt
+                .publish(
+                    &AtomicBool::new(false),
+                    #[cfg(windows)]
+                    None
+                )
+                .is_err()
+        );
         attempt.close().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancellation_and_symlink_output_are_not_published() {
         let root = tempfile::tempdir().unwrap();
@@ -221,8 +298,24 @@ mod tests {
         let external = root.path().join("original.mkv");
         fs::write(&external, "original").unwrap();
         std::os::unix::fs::symlink(&external, attempt.path().join("link.mkv")).unwrap();
-        assert!(attempt.publish(&AtomicBool::new(false)).is_err());
-        assert!(attempt.publish(&AtomicBool::new(true)).is_err());
+        assert!(
+            attempt
+                .publish(
+                    &AtomicBool::new(false),
+                    #[cfg(windows)]
+                    None
+                )
+                .is_err()
+        );
+        assert!(
+            attempt
+                .publish(
+                    &AtomicBool::new(true),
+                    #[cfg(windows)]
+                    None
+                )
+                .is_err()
+        );
         attempt.close().unwrap();
         assert_eq!(fs::read_to_string(external).unwrap(), "original");
     }

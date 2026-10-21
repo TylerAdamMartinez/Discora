@@ -1,24 +1,20 @@
-//! MakeMKV robot protocol and a cancellable, headless process runner (Linux/Unix).
+//! MakeMKV robot protocol and a cancellable, headless process runner.
 use std::{
     collections::BTreeMap,
     ffi::OsString,
     io::{BufRead, BufReader, Read},
-    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
+use crate::process::ChildGuard;
 use crate::{Result, rip::RunLog};
-use nix::{
-    sys::signal::{Signal, killpg},
-    unistd::Pid,
-};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
@@ -213,18 +209,14 @@ impl MakeMkv {
     }
 
     pub fn installed() -> Result<Self> {
-        let executable = std::env::var_os("PATH")
-            .into_iter()
-            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-            .map(|path| path.join("makemkvcon"))
-            .find(|path| {
-                path.is_file()
-                    && path
-                        .metadata()
-                        .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-            })
-            .ok_or("makemkvcon was not found on PATH. Install MakeMKV first.")?;
-        Ok(Self::new(executable))
+        Ok(Self::new(crate::platform::makemkv(None)?))
+    }
+
+    pub fn discover(explicit: Option<&Path>) -> Result<Self> {
+        if explicit.is_none() {
+            return Self::installed();
+        }
+        Ok(Self::new(crate::platform::makemkv(explicit)?))
     }
 
     pub fn drives(
@@ -366,19 +358,15 @@ impl MakeMkv {
                 args
             ),
         )?;
-        let child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(&self.arguments)
             .args(["-r", "--messages=-stdout", "--progress=-same"])
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .spawn()?;
-        let mut child = ChildGuard {
-            child,
-            stopped: false,
-        };
+            .stderr(Stdio::piped());
+        let mut child = ChildGuard::spawn(&mut command)?;
         let stdout = child
             .child
             .stdout
@@ -478,38 +466,6 @@ fn reader(
             }
         }
     })
-}
-
-struct ChildGuard {
-    child: Child,
-    stopped: bool,
-}
-
-impl ChildGuard {
-    fn stop(&mut self) {
-        if self.stopped {
-            return;
-        }
-        self.stopped = true;
-        let pgid = Pid::from_raw(self.child.id() as i32);
-        let _ = killpg(pgid, Signal::SIGTERM);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if self.child.try_wait().is_ok_and(|status| status.is_some()) {
-                break;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        // Also terminate helpers which outlived the parent.
-        let _ = killpg(pgid, Signal::SIGKILL);
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        self.stop();
-    }
 }
 
 #[cfg(test)]

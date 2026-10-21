@@ -1,5 +1,4 @@
 //! Exercise command dispatch with isolated config and no TMDB/network access.
-#![cfg(target_os = "linux")]
 
 use std::{fs, path::Path, process::Command};
 
@@ -8,6 +7,8 @@ fn command(config_home: &Path) -> Command {
     command
         .env("XDG_CONFIG_HOME", config_home)
         .env("HOME", config_home)
+        .env("APPDATA", config_home)
+        .env("LOCALAPPDATA", config_home)
         .env_remove("TMDB_TOKEN");
     command
 }

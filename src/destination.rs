@@ -1,21 +1,24 @@
 //! Config-managed SSHFS output. The mount stays alive until all rip workers have
 //! stopped. No reconnect: lost remote handles must fail instead of silently
 //! continuing a partially written movie on a new connection.
+#[cfg(target_os = "linux")]
 use std::{
-    ffi::OsString,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     os::unix::process::CommandExt,
-    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::atomic::AtomicBool,
     thread,
     time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
+use std::{path::PathBuf, sync::atomic::AtomicBool};
 
 use crate::{Result, rip::RunLog};
+#[cfg(not(windows))]
+use std::path::Path;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct RipSettings {
@@ -62,7 +65,7 @@ impl DestinationSettings {
 }
 
 impl Remote {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         // Restrict connection identifiers to avoid ambiguity in SSHFS's
         // [user@]host:path syntax and in OpenSSH option parsing.
         if self.host.is_empty()
@@ -94,17 +97,16 @@ impl Remote {
         }
         if let Some(identity) = &self.identity_file
             && (!identity.is_absolute()
-                || identity
-                    .as_os_str()
-                    .as_encoded_bytes()
-                    .iter()
-                    .any(|b| b",\"\\".contains(b) || b.is_ascii_control()))
+                || identity.as_os_str().as_encoded_bytes().iter().any(|b| {
+                    (b",\"".contains(b) || (cfg!(unix) && *b == b'\\')) || b.is_ascii_control()
+                }))
         {
-            return Err("rip.destination.identity_file must be an absolute path without commas, quotes, backslashes, or control characters".into());
+            return Err("rip.destination.identity_file must be an absolute path without commas, quotes, or control characters (backslashes are also disallowed on Unix)".into());
         }
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn arguments(&self, mountpoint: &Path) -> Vec<OsString> {
         let mut args = vec![
             "-f".into(),
@@ -140,6 +142,8 @@ pub struct MountedDestination {
     pub label: String,
     pub remote: Option<Remote>,
     mount: Option<Mount>,
+    #[cfg(windows)]
+    pub publisher: Option<crate::windows_remote::Publisher>,
 }
 
 impl MountedDestination {
@@ -150,6 +154,8 @@ impl MountedDestination {
                 root,
                 remote: None,
                 mount: None,
+                #[cfg(windows)]
+                publisher: None,
             }),
             Destination::Sshfs(remote) => {
                 println!(
@@ -158,6 +164,8 @@ impl MountedDestination {
                 );
                 let mount = Mount::connect(&remote, cancel, log)?;
                 Ok(Self {
+                    #[cfg(windows)]
+                    publisher: Some(mount.publisher.clone()),
                     root: mount.path().to_owned(),
                     label: format!(
                         "{}@{}:{}",
@@ -180,6 +188,7 @@ impl MountedDestination {
     }
 }
 
+#[cfg(target_os = "linux")]
 struct Mount {
     directory: Option<PathBuf>,
     process: Child,
@@ -189,6 +198,7 @@ struct Mount {
     log: RunLog,
 }
 
+#[cfg(target_os = "linux")]
 impl Mount {
     fn path(&self) -> &Path {
         self.directory.as_deref().expect("mount directory")
@@ -365,6 +375,7 @@ impl Mount {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Mount {
     fn drop(&mut self) {
         if let Err(error) = self.close() {
@@ -373,6 +384,7 @@ impl Drop for Mount {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn is_mounted(path: &Path) -> Result<bool> {
     use std::os::unix::ffi::OsStrExt;
     let mut escaped = Vec::new();
@@ -390,6 +402,7 @@ fn is_mounted(path: &Path) -> Result<bool> {
         .any(|line| line.split(|byte| *byte == b' ').nth(4) == Some(escaped.as_slice())))
 }
 
+#[cfg(target_os = "linux")]
 fn unmount(executables: &[OsString], path: &Path) -> Result<()> {
     for executable in executables {
         let mut child = match Command::new(executable)
@@ -424,6 +437,7 @@ fn unmount(executables: &[OsString], path: &Path) -> Result<()> {
     Err("Install fusermount3 (or fusermount) to unmount SSHFS".into())
 }
 
+#[cfg(target_os = "linux")]
 fn preflight(root: &Path) -> Result<()> {
     let directory = tempfile::Builder::new()
         .prefix(".discora-check-")
@@ -459,7 +473,7 @@ fn preflight(root: &Path) -> Result<()> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::{os::unix::fs::PermissionsExt, sync::atomic::Ordering};
@@ -669,5 +683,23 @@ mod tests {
         // This is a simulated mount backed by a disposable local test directory.
         fs::remove_file(path.join("keep.mkv")).unwrap();
         fs::remove_dir(path).unwrap();
+    }
+}
+
+#[cfg(windows)]
+use crate::windows_remote::Mount;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+struct Mount;
+#[cfg(not(any(windows, target_os = "linux")))]
+impl Mount {
+    fn connect(_: &Remote, _: &AtomicBool, _: &RunLog) -> Result<Self> {
+        Err("Managed SSHFS requires Linux or Windows".into())
+    }
+    fn path(&self) -> &Path {
+        unreachable!()
+    }
+    fn close(&mut self) -> Result<()> {
+        Ok(())
     }
 }

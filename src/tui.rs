@@ -23,10 +23,6 @@ use ratatui::{
     widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 use reqwest::blocking::Client;
-use signal_hook::{
-    SigId,
-    consts::{SIGINT, SIGTERM},
-};
 
 use crate::{
     Result,
@@ -52,6 +48,10 @@ enum Phase {
 
 enum Job {
     Search(String),
+    CheckDestination {
+        movie: Media,
+        destination: PathBuf,
+    },
     Drives,
     Titles(u32),
     Rip {
@@ -62,6 +62,11 @@ enum Job {
 }
 enum Outcome {
     Movies(Vec<Media>),
+    Destination {
+        movie: Media,
+        destination: PathBuf,
+        exists: bool,
+    },
     Drives(Vec<Drive>),
     Titles(Vec<Title>),
     Saved(PathBuf),
@@ -82,15 +87,6 @@ impl Drop for Worker {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
-        }
-    }
-}
-
-struct Signals(Vec<SigId>);
-impl Drop for Signals {
-    fn drop(&mut self) {
-        for id in self.0.drain(..) {
-            signal_hook::low_level::unregister(id);
         }
     }
 }
@@ -149,6 +145,8 @@ struct App {
     root: PathBuf,
     root_label: String,
     remote: Option<crate::destination::Remote>,
+    #[cfg(windows)]
+    publisher: Option<crate::windows_remote::Publisher>,
     destination: Option<PathBuf>,
     token: String,
     makemkv: MakeMkv,
@@ -179,7 +177,11 @@ impl Drop for App {
     }
 }
 
-pub fn run(disc: Option<u32>, destination: crate::destination::Destination) -> Result<()> {
+pub fn run(
+    disc: Option<u32>,
+    destination: crate::destination::Destination,
+    executable: Option<PathBuf>,
+) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("The rip command needs an interactive terminal".into());
     }
@@ -187,16 +189,11 @@ pub fn run(disc: Option<u32>, destination: crate::destination::Destination) -> R
         .ok()
         .filter(|t| !t.trim().is_empty())
         .ok_or("Set TMDB_TOKEN first")?;
-    let makemkv = MakeMkv::installed()?;
+    let makemkv = MakeMkv::discover(executable.as_deref())?;
     let log = RunLog::create(&rip::log_directory()?)?;
     log.write("session", "Starting interactive movie ripping workflow")?;
     let terminated = Arc::new(AtomicBool::new(false));
-    let mut signals = Signals(Vec::new());
-    for signal in [SIGINT, SIGTERM] {
-        signals
-            .0
-            .push(signal_hook::flag::register(signal, terminated.clone())?);
-    }
+    let _signals = crate::platform::Signals::register(terminated.clone())?;
     let mounted = crate::destination::MountedDestination::open(destination, &terminated, &log)
         .inspect_err(|error| {
             let _ = log.write("sshfs", &error.to_string());
@@ -223,6 +220,10 @@ fn run_mounted(
     let mut app = App::new(disc, mounted.root.clone(), token, makemkv, log);
     app.root_label = mounted.label.clone();
     app.remote = mounted.remote.clone();
+    #[cfg(windows)]
+    {
+        app.publisher = mounted.publisher.clone();
+    }
     let result = {
         let _restore = TerminalGuard;
         let mut terminal = ratatui::try_init()?;
@@ -257,6 +258,8 @@ impl App {
             forced_disc: disc,
             root_label: root.display().to_string(),
             remote: None,
+            #[cfg(windows)]
+            publisher: None,
             root,
             destination: None,
             token,
@@ -293,6 +296,8 @@ impl App {
         let makemkv = self.makemkv.clone();
         let log = self.log.clone();
         let token = self.token.clone();
+        #[cfg(windows)]
+        let publisher = self.publisher.clone();
         let (tx, rx) = mpsc::sync_channel(256);
         let handle = thread::spawn(move || {
             let mut emit = |event| {
@@ -310,6 +315,23 @@ impl App {
                                 movies.into_iter().filter(|m| m.year().is_some()).collect(),
                             ))
                         }
+                        Job::CheckDestination { movie, destination } => {
+                            let path = crate::files::named_mkv(&destination)?;
+                            #[cfg(windows)]
+                            let exists = if let Some(publisher) = &publisher {
+                                publisher.exists(&path, &worker_cancel)?
+                            } else {
+                                destination_exists(&path)?
+                            };
+                            #[cfg(unix)]
+                            let exists = destination_exists(&path)?;
+                            crate::makemkv::check_cancel(&worker_cancel)?;
+                            Ok(Outcome::Destination {
+                                movie,
+                                destination,
+                                exists,
+                            })
+                        }
                         Job::Drives => Ok(Outcome::Drives(makemkv.drives(
                             &worker_cancel,
                             &log,
@@ -321,15 +343,20 @@ impl App {
                             &log,
                             &mut emit,
                         )?)),
-                        Job::Rip { movie, disc, title } => Ok(Outcome::Saved(rip::run(
-                            &makemkv,
-                            &movie,
-                            disc,
-                            title,
-                            &worker_cancel,
-                            &log,
-                            &mut emit,
-                        )?)),
+                        Job::Rip { movie, disc, title } => {
+                            let output = rip::Output::local(&movie);
+                            #[cfg(windows)]
+                            let output = output.with_publisher(publisher.as_ref());
+                            Ok(Outcome::Saved(rip::run(
+                                &makemkv,
+                                output,
+                                disc,
+                                title,
+                                &worker_cancel,
+                                &log,
+                                &mut emit,
+                            )?))
+                        }
                     }
                 }));
             let result = match result {
@@ -340,7 +367,11 @@ impl App {
                     return;
                 }
             };
-            let result = result.map_err(|e| e.to_string());
+            let result = result.map_err(|error| {
+                let error = error.to_string();
+                let _ = log.write("error", &error);
+                error
+            });
             let result = match &result {
                 Err(error) => match log.write("error", error) {
                     Ok(()) => result,
@@ -470,6 +501,27 @@ impl App {
                     "Select the correct movie; type to filter"
                 }
                 .into();
+            }
+            Ok(Outcome::Destination {
+                movie,
+                destination,
+                exists,
+            }) => {
+                if exists {
+                    self.phase = Phase::Movies;
+                    self.status = crate::files::named_mkv(&destination)
+                        .map(|path| format!("Already exists: {}", self.display_path(&path)))
+                        .unwrap_or_else(|error| error.to_string());
+                } else if !self.canceled && !self.quit_when_idle {
+                    self.destination = Some(destination);
+                    self.movie = Some(movie);
+                    if let Some(disc) = self.forced_disc {
+                        self.disc = Some(disc);
+                        self.start(Job::Titles(disc), "Scanning disc titles…");
+                    } else {
+                        self.start(Job::Drives, "Discovering optical drives…");
+                    }
+                }
             }
             Ok(Outcome::Drives(drives)) => {
                 self.drives = drives;
@@ -619,12 +671,12 @@ impl App {
     fn display_path(&self, path: &std::path::Path) -> String {
         match path.strip_prefix(&self.root) {
             Ok(relative) if relative.as_os_str().is_empty() => self.root_label.clone(),
-            Ok(relative) => format!(
+            Ok(relative) if self.root_label != self.root.display().to_string() => format!(
                 "{}/{}",
                 self.root_label.trim_end_matches('/'),
-                relative.display()
+                relative.to_string_lossy().replace('\\', "/")
             ),
-            Err(_) => path.display().to_string(),
+            _ => path.display().to_string(),
         }
     }
 
@@ -637,33 +689,14 @@ impl App {
                 let movie = self.movies[index].clone();
                 match movie_destination(&self.root, &movie) {
                     Ok(destination) => {
-                        let check = crate::files::named_mkv(&destination).and_then(|path| {
-                            match std::fs::symlink_metadata(&path) {
-                                Ok(_) => {
-                                    Err(format!("Already exists: {}", self.display_path(&path))
-                                        .into())
-                                }
-                                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                                Err(error) => Err(error.into()),
-                            }
-                        });
-                        if let Err(error) = check {
-                            self.status = error.to_string();
-                            return;
-                        }
-                        self.destination = Some(destination);
-                        self.movie = Some(movie);
+                        self.start(
+                            Job::CheckDestination { movie, destination },
+                            "Checking destination…",
+                        );
                     }
                     Err(error) => {
                         self.status = error.to_string();
-                        return;
                     }
-                }
-                if let Some(disc) = self.forced_disc {
-                    self.disc = Some(disc);
-                    self.start(Job::Titles(disc), "Scanning disc titles…");
-                } else {
-                    self.start(Job::Drives, "Discovering optical drives…");
                 }
             }
             Phase::Drives => {
@@ -732,7 +765,7 @@ impl App {
                             format!(
                                 "{}/{}",
                                 remote.movies_path.trim_end_matches('/'),
-                                relative.display()
+                                relative.to_string_lossy().replace('\\', "/")
                             )
                         }
                     })
@@ -930,6 +963,14 @@ fn safe_text(text: &str) -> String {
         .collect()
 }
 
+fn destination_exists(path: &std::path::Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn matches_filter(text: &str, filter: &str) -> bool {
     let lower = text.to_lowercase();
     let mut chars = lower.chars();
@@ -991,6 +1032,11 @@ mod tests {
                 } else {
                     root.into()
                 };
+                let path = if port.is_none() {
+                    app.display_path(app.destination.as_ref().unwrap_or(&app.root))
+                } else {
+                    path
+                };
                 let expected = format!("{movie} -> {mode} {path}");
                 for width in [220, 40] {
                     let mut terminal =
@@ -1046,6 +1092,7 @@ mod tests {
         std::fs::write(crate::files::named_mkv(&folder).unwrap(), "existing movie").unwrap();
         app.complete(Ok(Outcome::Movies(vec![movie])));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        wait_for_task(&mut app);
         assert!(app.phase == Phase::Movies);
         assert!(app.worker.is_none());
         assert!(
@@ -1063,8 +1110,7 @@ mod tests {
         let executable = root.path().join("makemkvcon");
         fs::write(
             &executable,
-            r#"#!/usr/bin/python3
-import sys
+            r#"import sys
 from pathlib import Path
 if 'disc:9999' in sys.argv:
     print('DRV:2,2,999,1,"Drive","DISC","/dev/sr2"')
@@ -1085,7 +1131,10 @@ else:
             None,
             root.path().join("Movies"),
             "unused-test-token".into(),
-            MakeMkv::with_arguments("/usr/bin/python3".into(), vec![executable.into_os_string()]),
+            MakeMkv::with_arguments(
+                crate::test_support::python(),
+                vec![executable.into_os_string()],
+            ),
             log,
         );
         let movie: Media =

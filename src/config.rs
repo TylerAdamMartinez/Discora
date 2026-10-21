@@ -29,7 +29,7 @@ pub fn resolve_rip(overrides: LibraryPaths) -> Result<Destination> {
         validate_path(path)?;
         return Ok(Destination::Local(path.clone()));
     }
-    let config_path = dirs::config_dir()
+    let config_path = crate::platform::config_directory()
         .ok_or("Cannot locate the user config directory; supply --movies-path")?
         .join("discora/discora.toml");
     if let Some(remote) = remote_at(&config_path)? {
@@ -97,7 +97,7 @@ pub fn resolve(overrides: LibraryPaths, need_tv: bool) -> Result<LibraryPaths> {
         validate(&overrides, need_tv)?;
         return Ok(overrides);
     }
-    let path = dirs::config_dir()
+    let path = crate::platform::config_directory()
         .ok_or("Cannot locate the user config directory; supply the required library path flags")?
         .join("discora")
         .join("discora.toml");

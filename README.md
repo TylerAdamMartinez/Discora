@@ -1,6 +1,6 @@
 # Discora
 
-Discora is a Rust CLI for movie/TV directory creation, headless movie ripping, and MKV naming.
+Discora is a Rust CLI for movie/TV directory creation, headless movie ripping, and MKV naming on Linux and Windows 10/11 x64.
 
 Install the CLI from this repository with `cargo install --path .`, then run
 `discora` to start the interactive movie ripper. Use `discora --help` to see all commands.
@@ -48,8 +48,9 @@ Omitting `[rip.destination]` also selects local ripping. Setup writes an explici
 Use absolute paths for both flags and config values. TOML values do not expand
 `~` or environment variables. Windows paths can use literal TOML strings, such as
 `movies_path = 'D:\Movies'`. Library directories need not exist for creation or
-ripping, but cleanup requires existing directories. Native config discovery does
-not change the current Linux/Unix requirements of the ripping implementation.
+ripping, but cleanup requires existing directories. Windows drive paths and UNC
+library paths are supported. Local publication needs a filesystem with hard-link
+support, such as NTFS; FAT/exFAT destinations are not supported.
 
 If a required path is missing, interactive setup asks for the movie path first,
 then the TV path, skipping settings already saved. It offers CLI values as defaults
@@ -64,8 +65,12 @@ failures are reported with their filename; malformed files are not overwritten.
 
 ## Rip a movie
 
-On Linux, install MakeMKV with `makemkvcon` on `PATH`, configure its registration
-and audio/subtitle preferences, and ensure your user can access the optical drive.
+Install MakeMKV, configure its registration and audio/subtitle preferences, and
+ensure your user can access the optical drive. On Linux, put `makemkvcon` on `PATH`.
+On Windows, Discora searches `PATH`, then the standard MakeMKV folders under
+Program Files, for `makemkvcon64.exe` or `makemkvcon.exe`. To use a custom
+installation, supply `--makemkv-path` before or after `rip`; an invalid explicit
+path fails instead of silently selecting another installation.
 Set `TMDB_TOKEN` to your TMDB API read access token, then run:
 
 ```sh
@@ -74,6 +79,20 @@ cargo run
 # Choose a particular MakeMKV drive index or a different library root:
 cargo run -- rip --disc 0 --movies-path "/mnt/storage/Movies"
 ```
+
+For Windows, install Rust with the MSVC toolchain and Visual Studio C++ Build
+Tools, then run in PowerShell or Windows Terminal:
+
+```powershell
+cargo install --path .
+$env:TMDB_TOKEN = "your-api-read-access-token"
+discora rip --movies-path 'D:\Movies'
+# Optional executable override:
+discora --makemkv-path 'C:\Program Files (x86)\MakeMKV\makemkvcon64.exe' rip --movies-path 'D:\Movies'
+```
+
+Generated Windows names replace forbidden characters and avoid reserved device
+names. Existing folders are not renamed automatically.
 
 The full-screen interface walks through TMDB movie search, drive discovery, title
 scanning, selection, and confirmation. Titles are shown longest first with their
@@ -100,16 +119,18 @@ ripping are not included.
 
 Logs are retained at `$XDG_STATE_HOME/discora/logs`, or
 `~/.local/state/discora/logs` when `XDG_STATE_HOME` is unset. The log path is
-shown in the interface and printed on exit. Only a bounded recent log buffer is
-kept in memory; the full viewer reads the disk log in pages.
+shown in the interface and printed on exit. On Windows, logs live at
+`%LOCALAPPDATA%\discora\logs` (with native Known Folder fallback). Only a bounded
+recent log buffer is kept in memory; the full viewer reads the disk log in pages.
 
 Each rip writes to a unique `.discora-rip-*` directory inside the movie
 directory. After MakeMKV succeeds, exactly one nonempty, regular MKV must exist
 before it is published. Existing final filenames are never replaced, including
-when another process creates one during the rip. Publication uses a hard link
-and requires a filesystem that supports hard links. Existing extras are left alone.
+when another process creates one during the rip. Local publication uses a hard
+link and requires a filesystem that supports hard links. Windows SSHFS uses a server-side SFTP hard link because WinFsp does not
+expose hard links to Windows. Existing extras are left alone.
 
-On failure, Esc/Ctrl+C cancellation, or SIGTERM, the application stops and reaps
+On failure, Esc/Ctrl+C cancellation, or SIGTERM on Unix, the application stops and reaps
 MakeMKV, deletes only that attempt's temporary output, and retains the log. Cleanup
 failures report the remaining path. Forced termination or power loss can leave
 staging directories behind; these are not automatically deleted on later runs.
@@ -123,13 +144,17 @@ The application orchestrates MakeMKV through its
 The ripping computer uses its own optical drive and writes the MKV directly to
 your computer over SFTP, without saving a complete local copy. Discora manages
 the SSHFS mount and unmount automatically; no manual mounting is needed.
-This destination currently requires Linux on the ripping computer.
+The ripping computer can run Linux or Windows.
 
-On the ripping computer, install `sshfs` and FUSE (`fusermount3`, or
-`fusermount`) alongside MakeMKV. FUSE must be available to your user. On the
-receiving computer, run an SSH/SFTP server with an existing movie directory
+On Linux, install `sshfs` and FUSE (`fusermount3`, or `fusermount`) alongside
+MakeMKV. FUSE must be available to your user. On Windows, install
+[WinFsp](https://winfsp.dev/) and [SSHFS-Win](https://github.com/winfsp/sshfs-win).
+Discora discovers `sshfs-win.exe` on PATH or under the standard SSHFS-Win
+installation folders, selects an unused drive letter, and owns the foreground
+mount process. No manual mapping or WSL is needed. On the receiving computer, run an SSH/SFTP server with an existing movie directory
 writable by the upload account. The server/filesystem must support SFTP hard
-links and file syncing. Discora checks these operations before opening the rip
+links and file syncing (`hardlink@openssh.com` and `fsync@openssh.com` for a
+Windows client). Discora checks these operations before opening the rip
 interface and refuses to start if they are unavailable.
 
 Configure SSH key authentication or an SSH agent, then verify the receiving
@@ -138,6 +163,25 @@ For example, connect once using `ssh -p 22 movie-upload@192.168.1.50` and verify
 the fingerprint before accepting it. Discora requires a known host key and uses
 noninteractive SSH authentication; it does not store passwords or prompt for
 key passphrases. Load encrypted keys into your SSH agent first.
+
+On Windows, mounting and SFTP publication use SSHFS-Win's bundled SSH client,
+not Windows OpenSSH. Both require verified host keys in the current user's
+`%USERPROFILE%\.ssh\known_hosts`. Use the bundled client when testing authentication
+and verifying the server fingerprint:
+
+```powershell
+& 'C:\Program Files\SSHFS-Win\bin\ssh.exe' -o 'UserKnownHostsFile="/cygdrive/c/Users/YourName/.ssh/known_hosts"' -p 22 movie-upload@192.168.1.50
+```
+
+Adjust the installation and user paths. Do not accept a host key without checking
+its fingerprint through a trusted channel. For a custom key, add
+`identity_file = 'C:\Users\YourName\.ssh\id_ed25519'` to the destination config.
+Discora translates local Windows paths for the bundled Cygwin SSH environment;
+`movies_path` remains an absolute POSIX path on the server. Paths used as SSH
+options cannot contain commas, quotes, or control characters. Native Windows
+OpenSSH agent bridging is not included: use a key or an agent compatible with
+the bundled SSH client. The bundled client's default identities use its own home
+configuration; an explicit `identity_file` is the most predictable setup.
 
 The friend's `discora.toml` can contain only:
 
@@ -170,9 +214,10 @@ Movie data and unique `.discora-rip-*` staging directories live on the receiving
 computer; the ripping computer stores only session logs and a temporary empty
 mountpoint. Network failures fail the rip rather than reconnecting and resuming
 open files. You may need to rip again, and a disconnection can leave remote
-partial output; the error/log reports the affected paths. Unmount failures retain
-the mountpoint and report the manual cleanup command instead of deleting its
-contents. Forced termination can also leave a mount behind.
+partial output; the error/log reports the affected paths. Unmount failures report the affected mount instead of deleting its contents.
+Windows disconnects only the mount process tree it started and checks that the
+drive disappears. Linux reports a manual unmount command when needed. Forced
+termination can also leave a mount behind.
 
 ## Existing utilities
 
@@ -206,7 +251,9 @@ cargo test --locked
 ```
 
 Tests use a fake MakeMKV executable and temporary directories; no disc, TMDB token,
-or MakeMKV installation is needed. The process tests require Python 3 and Linux/Unix.
+or MakeMKV installation is needed. The shared process tests require Python 3 on PATH (or `DISCORA_TEST_PYTHON` set
+to its executable) and run on both Linux and Windows. Linux SSHFS lifecycle tests
+remain Linux-only. CI runs formatting, Clippy, and tests on both operating systems.
 A real-disc acceptance check still requires selecting and ripping a movie on a
 machine with an accessible optical drive.
 
@@ -216,3 +263,15 @@ rejected before scanning, and that successful completion/cancellation unmounts
 the library. Interrupt the network during a rip and verify failure, preserved
 existing files, and actionable cleanup reporting. Automated SSHFS lifecycle
 tests use fake processes and do not require FUSE or a real server.
+
+
+For Windows acceptance, run both a local NTFS rip and a managed SSHFS rip to an
+SSH/SFTP server supporting the required extensions. Verify the final movie,
+Esc/Ctrl+C cancellation, and that a pre-existing destination survives. Create a
+final filename from another client during ripping and verify publication refuses
+to overwrite it. Interrupt the network during ripping and publication; confirm
+failure reports the remote paths, retains logs, and releases Discora's drive while
+leaving unrelated mounts intact. If publication loses its acknowledgement, inspect
+the reported final path before retrying. Repeat with spaces in the key, library,
+and executable paths. These live checks require a Windows machine and optical
+drive; the fake-process suite does not certify a real WinFsp installation.
