@@ -20,7 +20,7 @@ use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Gauge, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Wrap},
 };
 use reqwest::blocking::Client;
 use signal_hook::{
@@ -779,13 +779,19 @@ impl App {
                 )
             })
             .unwrap_or_else(|| format!("—% | Elapsed {} | Remaining —", duration(elapsed)));
-        frame.render_widget(
-            Gauge::default()
-                .block(Block::bordered().title(format!("Overall progress | {label}")))
-                .gauge_style(Style::default().fg(Color::Cyan))
-                .ratio(self.progress.unwrap_or(0.0)),
-            progress,
-        );
+        let progress_block = Block::bordered().title(format!("Overall progress | {label}"));
+        let bar = progress_block.inner(progress);
+        frame.render_widget(progress_block, progress);
+        let filled_width =
+            (f64::from(bar.width) * self.progress.unwrap_or(0.0).clamp(0.0, 1.0)).round() as u16;
+        // Draw every filled cell alike, without the gauge's special center-label cell.
+        for y in bar.top()..bar.bottom() {
+            for x in bar.left()..bar.left() + filled_width {
+                frame.buffer_mut()[(x, y)]
+                    .set_symbol("█")
+                    .set_style(Style::default().fg(Color::Cyan));
+            }
+        }
         let (title, text) = if self.log_view {
             match &self.log_page {
                 Some(page) => (
