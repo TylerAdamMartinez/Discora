@@ -147,6 +147,7 @@ struct App {
     title: Option<u32>,
     forced_disc: Option<u32>,
     root: PathBuf,
+    root_label: String,
     destination: Option<PathBuf>,
     token: String,
     makemkv: MakeMkv,
@@ -177,7 +178,7 @@ impl Drop for App {
     }
 }
 
-pub fn run(disc: Option<u32>, root: PathBuf) -> Result<()> {
+pub fn run(disc: Option<u32>, destination: crate::destination::Destination) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("The rip command needs an interactive terminal".into());
     }
@@ -195,11 +196,44 @@ pub fn run(disc: Option<u32>, root: PathBuf) -> Result<()> {
             .0
             .push(signal_hook::flag::register(signal, terminated.clone())?);
     }
+    let mounted = crate::destination::MountedDestination::open(destination, &terminated, &log)
+        .inspect_err(|error| {
+            let _ = log.write("sshfs", &error.to_string());
+            eprintln!("Run log: {}", log.path.display());
+        })?;
+    let result = run_mounted(
+        disc,
+        mounted.root.clone(),
+        mounted.label.clone(),
+        token,
+        makemkv,
+        log,
+        &terminated,
+    );
+    let cleanup = mounted.close();
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}").into()),
+    }
+}
+
+fn run_mounted(
+    disc: Option<u32>,
+    root: PathBuf,
+    root_label: String,
+    token: String,
+    makemkv: MakeMkv,
+    log: RunLog,
+    terminated: &Arc<AtomicBool>,
+) -> Result<()> {
     let mut app = App::new(disc, root, token, makemkv, log);
+    app.root_label = root_label;
     let result = {
         let _restore = TerminalGuard;
         let mut terminal = ratatui::try_init()?;
-        app.event_loop(&mut terminal, &terminated)
+        app.event_loop(&mut terminal, terminated)
     };
     // If drawing or input failed, finish child termination/cleanup before returning.
     app.rx.take();
@@ -207,7 +241,7 @@ pub fn run(disc: Option<u32>, root: PathBuf) -> Result<()> {
     println!("Run log: {}", app.log.path.display());
     result?;
     if let Some(path) = &app.saved {
-        println!("Saved: {}", path.display());
+        println!("Saved: {}", app.display_path(path));
     } else if app.phase == Phase::Failed || app.canceled {
         return Err(app.status.clone().into());
     }
@@ -228,6 +262,7 @@ impl App {
             disc: None,
             title: None,
             forced_disc: disc,
+            root_label: root.display().to_string(),
             root,
             destination: None,
             token,
@@ -587,6 +622,18 @@ impl App {
         }
     }
 
+    fn display_path(&self, path: &std::path::Path) -> String {
+        match path.strip_prefix(&self.root) {
+            Ok(relative) if relative.as_os_str().is_empty() => self.root_label.clone(),
+            Ok(relative) => format!(
+                "{}/{}",
+                self.root_label.trim_end_matches('/'),
+                relative.display()
+            ),
+            Err(_) => path.display().to_string(),
+        }
+    }
+
     fn choose(&mut self) {
         let Some((index, _)) = self.choices().get(self.selected).cloned() else {
             return;
@@ -596,6 +643,20 @@ impl App {
                 let movie = self.movies[index].clone();
                 match movie_destination(&self.root, &movie) {
                     Ok(destination) => {
+                        let check = crate::files::named_mkv(&destination).and_then(|path| {
+                            match std::fs::symlink_metadata(&path) {
+                                Ok(_) => {
+                                    Err(format!("Already exists: {}", self.display_path(&path))
+                                        .into())
+                                }
+                                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                                Err(error) => Err(error.into()),
+                            }
+                        });
+                        if let Err(error) = check {
+                            self.status = error.to_string();
+                            return;
+                        }
                         self.destination = Some(destination);
                         self.movie = Some(movie);
                     }
@@ -665,8 +726,8 @@ impl App {
         let destination = self
             .destination
             .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| self.root.display().to_string());
+            .map(|p| self.display_path(p))
+            .unwrap_or_else(|| self.root_label.clone());
         frame.render_widget(
             Paragraph::new(safe_text(&format!("{movie}\n{destination}"))),
             context,
@@ -737,7 +798,7 @@ impl App {
                         self.destination
                             .as_ref()
                             .and_then(|d| crate::files::named_mkv(d).ok())
-                            .map(|p| p.display().to_string())
+                            .map(|p| self.display_path(&p))
                             .unwrap_or_default()
                     )
                 }
@@ -751,7 +812,7 @@ impl App {
                     "Saved: {}",
                     self.saved
                         .as_ref()
-                        .map(|p| p.display().to_string())
+                        .map(|p| self.display_path(p))
                         .unwrap_or_default()
                 ),
                 _ => self.status.clone(),
@@ -883,6 +944,36 @@ mod tests {
             app.poll();
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn existing_remote_movie_is_rejected_before_drive_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let log = RunLog::create(root.path()).unwrap();
+        let mut app = App::new(
+            None,
+            root.path().join("mounted"),
+            "unused-test-token".into(),
+            MakeMkv::new("/nonexistent".into()),
+            log,
+        );
+        app.root_label = "friend@server:/Movies".into();
+        let movie: Media =
+            serde_json::from_str(r#"{"id":1,"title":"Example","release_date":"2005-01-01"}"#)
+                .unwrap();
+        let folder = movie_destination(&app.root, &movie).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(crate::files::named_mkv(&folder).unwrap(), "existing movie").unwrap();
+        app.complete(Ok(Outcome::Movies(vec![movie])));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.phase == Phase::Movies);
+        assert!(app.worker.is_none());
+        assert!(
+            app.status.contains(
+                "Already exists: friend@server:/Movies/Example (2005)/Example (2005).mkv"
+            )
+        );
+        assert_eq!(app.display_path(&app.root), "friend@server:/Movies");
     }
 
     #[test]

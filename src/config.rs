@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::destination::{Destination, RipSettings};
 use inquire::Text;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,9 +15,45 @@ pub struct LibraryPaths {
     pub movies_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tv_shows_path: Option<PathBuf>,
+    #[serde(default)]
+    pub rip: RipSettings,
     // Preserve unrelated settings when completing a partial config.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
+}
+
+/// An explicit movie path always selects local output, including when the saved
+/// destination is remote. Utilities continue to resolve only local library paths.
+pub fn resolve_rip(overrides: LibraryPaths) -> Result<Destination> {
+    if let Some(path) = &overrides.movies_path {
+        validate_path(path)?;
+        return Ok(Destination::Local(path.clone()));
+    }
+    let config_path = dirs::config_dir()
+        .ok_or("Cannot locate the user config directory; supply --movies-path")?
+        .join("discora/discora.toml");
+    if let Some(remote) = remote_at(&config_path)? {
+        return Ok(Destination::Sshfs(remote));
+    }
+    let paths = resolve(overrides, false)?;
+    Ok(Destination::Local(
+        paths.movies_path.expect("resolved movie path"),
+    ))
+}
+
+fn remote_at(path: &Path) -> Result<Option<crate::destination::Remote>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot read config {}: {error}", path.display()).into()),
+    };
+    let saved: LibraryPaths = toml::from_str(&contents)
+        .map_err(|error| format!("Invalid config {}: {error}", path.display()))?;
+    saved
+        .rip
+        .destination
+        .remote()
+        .map_err(|error| format!("Config {}: {error}", path.display()).into())
 }
 
 pub fn parse_path(value: &str) -> std::result::Result<PathBuf, String> {
@@ -184,6 +221,52 @@ mod tests {
 
     fn no_prompt(_: &str, _: Option<&str>) -> Result<PathBuf> {
         panic!("unexpected setup prompt")
+    }
+
+    #[test]
+    fn remote_config_needs_no_local_paths_and_does_not_rewrite_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        let contents = "[rip.destination]\ntype = 'sshfs'\nhost = 'server'\nusername = 'friend'\nmovies_path = '/media/Movies'\n";
+        fs::write(&config, contents).unwrap();
+        let remote = remote_at(&config).unwrap().unwrap();
+        assert_eq!(remote.port, 22);
+        assert_eq!(remote.movies_path, "/media/Movies");
+        assert_eq!(fs::read_to_string(config).unwrap(), contents);
+    }
+
+    #[test]
+    fn local_default_is_saved_and_existing_configs_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        fs::write(
+            &config,
+            format!("movies_path = '{}'\n", dir.path().display()),
+        )
+        .unwrap();
+        assert!(remote_at(&config).unwrap().is_none());
+        save(&config, &paths(Some(dir.path()), None)).unwrap();
+        let contents = fs::read_to_string(&config).unwrap();
+        assert!(contents.contains("[rip.destination]"));
+        assert!(contents.contains("type = \"local\""));
+        assert!(remote_at(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_remote_config_reports_filename_and_preserves_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        for contents in [
+            "[rip.destination]\ntype = 'other'",
+            "[rip.destination]\ntype = 'sshfs'",
+            "[rip.destination]\ntype = 'sshfs'\nhost = '-bad'\nusername = 'friend'\nmovies_path = '/Movies'",
+            "[rip.destination]\ntype = 'sshfs'\nhost = 'server'\nusername = 'friend'\nmovies_path = 'relative'",
+        ] {
+            fs::write(&config, contents).unwrap();
+            let error = remote_at(&config).unwrap_err().to_string();
+            assert!(error.contains(config.to_str().unwrap()), "{error}");
+            assert_eq!(fs::read_to_string(&config).unwrap(), contents);
+        }
     }
 
     #[test]

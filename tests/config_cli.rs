@@ -158,3 +158,36 @@ fn mkdir_resolves_config_and_cli_paths_before_requesting_token() {
         .unwrap();
     assert!(String::from_utf8_lossy(&output.stderr).contains("Set TMDB_TOKEN first"));
 }
+
+#[test]
+fn remote_rip_uses_its_destination_without_local_setup_and_cli_path_selects_local() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        "[rip.destination]\ntype = 'sshfs'\nhost = 'server'\nusername = 'friend'\nmovies_path = '/media/Movies'\n",
+    );
+    for subcommand in [None, Some("rip")] {
+        let mut cmd = command(dir.path());
+        if let Some(subcommand) = subcommand {
+            cmd.arg(subcommand);
+        }
+        let output = cmd.output().unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("interactive terminal"), "{error}");
+        assert!(!error.contains("Missing library paths"));
+    }
+    // An explicit local path bypasses even an invalid remote configuration.
+    write_config(
+        dir.path(),
+        "[rip.destination]\ntype = 'sshfs'\nhost = '-bad'\n",
+    );
+    let output = command(dir.path())
+        .arg("rip")
+        .arg("--movies-path")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("interactive terminal"), "{error}");
+    assert!(!error.contains("Invalid config"));
+}

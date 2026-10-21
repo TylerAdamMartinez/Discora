@@ -1,4 +1,5 @@
 mod config;
+mod destination;
 mod files;
 mod makemkv;
 mod metadata;
@@ -167,10 +168,7 @@ fn main() -> Result<()> {
                 paths.tv_shows_path.as_deref().expect("resolved TV path"),
             )
         }
-        Commands::Rip { disc } => {
-            let paths = config::resolve(overrides, false)?;
-            tui::run(disc, paths.movies_path.expect("resolved movie path"))
-        }
+        Commands::Rip { disc } => tui::run(disc, config::resolve_rip(overrides)?),
     }
 }
 

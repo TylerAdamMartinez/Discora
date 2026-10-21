@@ -37,7 +37,13 @@ Discora reads `discora.toml` from your OS's normal config directory:
 ```toml
 movies_path = "/absolute/path/to/movies"
 tv_shows_path = "/absolute/path/to/tv-shows"
+
+[rip.destination]
+type = "local"
 ```
+
+Omitting `[rip.destination]` also selects local ripping. Setup writes an explicit
+`type = "local"` when creating a config.
 
 Use absolute paths for both flags and config values. TOML values do not expand
 `~` or environment variables. Windows paths can use literal TOML strings, such as
@@ -112,6 +118,62 @@ An empty movie directory may remain after a failed attempt.
 The application orchestrates MakeMKV through its
 [robot interface](https://www.makemkv.com/developers/usage.txt); it does not decode discs itself.
 
+## Rip directly to another computer over SSHFS
+
+The ripping computer uses its own optical drive and writes the MKV directly to
+your computer over SFTP, without saving a complete local copy. Discora manages
+the SSHFS mount and unmount automatically; no manual mounting is needed.
+This destination currently requires Linux on the ripping computer.
+
+On the ripping computer, install `sshfs` and FUSE (`fusermount3`, or
+`fusermount`) alongside MakeMKV. FUSE must be available to your user. On the
+receiving computer, run an SSH/SFTP server with an existing movie directory
+writable by the upload account. The server/filesystem must support SFTP hard
+links and file syncing. Discora checks these operations before opening the rip
+interface and refuses to start if they are unavailable.
+
+Configure SSH key authentication or an SSH agent, then verify the receiving
+computer's host key through a trusted channel and add it to `known_hosts`.
+For example, connect once using `ssh -p 22 movie-upload@192.168.1.50` and verify
+the fingerprint before accepting it. Discora requires a known host key and uses
+noninteractive SSH authentication; it does not store passwords or prompt for
+key passphrases. Load encrypted keys into your SSH agent first.
+
+The friend's `discora.toml` can contain only:
+
+```toml
+[rip.destination]
+type = "sshfs"
+host = "192.168.1.50"
+port = 22 # Optional; defaults to 22
+username = "movie-upload"
+movies_path = "/media/Movies" # Absolute path on the receiving computer
+
+# Optional; otherwise use the SSH agent/default identities
+identity_file = "/home/friend/.ssh/id_ed25519"
+```
+
+Run `discora` or `discora rip` normally. No local movie or TV path is required
+for remote ripping. Movie selection checks the shared destination before disc
+scanning, and publication still refuses to replace existing files, even if two
+people rip the same movie concurrently. There is no shared reservation to prevent
+that duplicated work yet.
+
+To rip locally for one invocation, use `discora rip --movies-path /local/Movies`.
+An explicit movie path always selects local output and bypasses the saved remote
+destination. To switch back permanently, use the local config shown above.
+`mkdir` and `file-cleanup` continue to use local top-level library paths and do
+not mount the remote destination.
+
+The connection stays open through disc scanning, ripping, and finalization.
+Movie data and unique `.discora-rip-*` staging directories live on the receiving
+computer; the ripping computer stores only session logs and a temporary empty
+mountpoint. Network failures fail the rip rather than reconnecting and resuming
+open files. You may need to rip again, and a disconnection can leave remote
+partial output; the error/log reports the affected paths. Unmount failures retain
+the mountpoint and report the manual cleanup command instead of deleting its
+contents. Forced termination can also leave a mount behind.
+
 ## Existing utilities
 
 ```sh
@@ -147,3 +209,10 @@ Tests use a fake MakeMKV executable and temporary directories; no disc, TMDB tok
 or MakeMKV installation is needed. The process tests require Python 3 and Linux/Unix.
 A real-disc acceptance check still requires selecting and ripping a movie on a
 machine with an accessible optical drive.
+
+For SSHFS acceptance, use a Linux client with FUSE and an SSH/SFTP server:
+verify that a movie appears only on the receiver, that an existing movie is
+rejected before scanning, and that successful completion/cancellation unmounts
+the library. Interrupt the network during a rip and verify failure, preserved
+existing files, and actionable cleanup reporting. Automated SSHFS lifecycle
+tests use fake processes and do not require FUSE or a real server.
