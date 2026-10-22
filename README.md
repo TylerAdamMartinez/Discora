@@ -188,6 +188,11 @@ key/known-hosts paths, SFTP initialization and process status, and SSHFS mount
 progress. Use F2 or the on-disk log above to inspect connection failures. Logs
 include usernames, host addresses, and local paths, but do not log private-key
 contents.
+For launcher diagnostics, set `$env:DISCORA_SSH_PROBE = '1'` in PowerShell
+before running Discora. This additionally runs the bundled `ssh -V` through the
+same Windows process launcher and records its output and hexadecimal exit code
+before attempting the normal connection. Remove the variable with
+`Remove-Item Env:DISCORA_SSH_PROBE` when finished.
 
 The friend's `discora.toml` can contain only:
 

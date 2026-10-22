@@ -67,6 +67,58 @@ fn ssh_options(remote: &Remote) -> Result<Vec<OsString>> {
     Ok(options)
 }
 
+/// Exercise the same suspended/job-managed launcher and handles as SFTP.
+#[cfg(windows)]
+fn probe_ssh_launcher(ssh: &Path, cancel: &AtomicBool, log: &RunLog) -> Result<()> {
+    use std::io::Read;
+
+    log.write(
+        "ssh-probe",
+        "Running bundled ssh -V through Discora's suspended, job-managed launcher",
+    )?;
+    let mut command = Command::new(ssh);
+    command
+        .arg("-V")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::OpenOptions::new().append(true).open(&log.path)?);
+    let mut process = ChildGuard::spawn(&mut command)?;
+    let started = Instant::now();
+    loop {
+        check_cancel(cancel)?;
+        if let Some(status) = process.child.try_wait()? {
+            let code = status
+                .code()
+                .map(|code| format!("0x{:08X}", code as u32))
+                .unwrap_or_else(|| "unavailable".to_owned());
+            log.write(
+                "ssh-probe",
+                &format!(
+                    "ssh -V finished: {status}; Windows exit code {code}; elapsed {:?}",
+                    started.elapsed()
+                ),
+            )?;
+            let mut stdout = String::new();
+            if let Some(mut output) = process.child.stdout.take() {
+                output.read_to_string(&mut stdout)?;
+            }
+            log.write(
+                "ssh-probe",
+                &format!("ssh -V stdout: {stdout:?}; version stderr is written directly above"),
+            )?;
+            return Ok(());
+        }
+        if started.elapsed() >= Duration::from_secs(5) {
+            log.write(
+                "ssh-probe",
+                "ssh -V did not exit within 5 seconds; stopping probe",
+            )?;
+            return Err("Bundled SSH launcher probe timed out; see run log".into());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 #[derive(Clone)]
 pub struct Publisher {
     root: PathBuf,
@@ -186,6 +238,9 @@ impl Mount {
                 ssh.display()
             ),
         )?;
+        if std::env::var_os("DISCORA_SSH_PROBE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            probe_ssh_launcher(&ssh, cancel, log)?;
+        }
         let options = ssh_options(remote)?;
         let mut control = Command::new(ssh);
         control.arg("-vvv");
