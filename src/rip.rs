@@ -73,7 +73,9 @@ pub struct Attempt {
 
 impl Attempt {
     pub fn create(movie: &Path) -> Result<Self> {
-        fs::create_dir_all(movie)?;
+        fs::create_dir_all(movie).map_err(|error| {
+            format!("Cannot create movie directory {}: {error}", movie.display())
+        })?;
         let destination = named_mkv(movie)?;
         match fs::symlink_metadata(&destination) {
             Ok(_) => {
@@ -84,11 +86,23 @@ impl Attempt {
                 .into());
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(format!(
+                    "Cannot inspect final movie path {}: {error}",
+                    destination.display()
+                )
+                .into());
+            }
         }
         let directory = tempfile::Builder::new()
             .prefix(".discora-rip-")
-            .tempdir_in(movie)?;
+            .tempdir_in(movie)
+            .map_err(|error| {
+                format!(
+                    "Cannot create rip staging directory inside {}: {error}",
+                    movie.display()
+                )
+            })?;
         Ok(Self {
             directory,
             destination,
@@ -197,6 +211,13 @@ pub fn run(
     emit: &mut impl FnMut(Event),
 ) -> Result<PathBuf> {
     makemkv::check_cancel(cancel)?;
+    log.write(
+        "staging",
+        &format!(
+            "Preparing movie directory {} (disc {disc}, title {title})",
+            output.movie.display()
+        ),
+    )?;
     let attempt = Attempt::create(output.movie)?;
     let result = (|| {
         log.write("staging", &attempt.path().display().to_string())?;
