@@ -41,6 +41,13 @@ fn cygwin_path(path: &Path) -> Result<String> {
     }
     Err("SSH identity and known_hosts paths must be absolute Windows paths".into())
 }
+// Cygwin parses a native parent's command line differently from the MSVC CRT.
+// Always enclose options in quotes before escaping their embedded SSH-config
+// quotes; Rust's default encoding may leave those escaped quotes unwrapped.
+fn cygwin_quoted_argument(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('\"', "\\\""))
+}
+
 #[cfg(windows)]
 fn ssh_options(remote: &Remote) -> Result<Vec<OsString>> {
     let known_hosts = dirs::home_dir()
@@ -249,7 +256,10 @@ impl Mount {
         let mut control = Command::new(ssh);
         control.arg("-vvv");
         for option in &options {
-            control.arg("-o").arg(option);
+            use std::os::windows::process::CommandExt;
+            control.arg("-o").raw_arg(cygwin_quoted_argument(
+                option.to_str().ok_or("SSH options must be valid Unicode")?,
+            ));
         }
         control.args([
             "-p",
@@ -395,6 +405,23 @@ impl Drop for Mount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cygwin_options_wrap_embedded_quotes_even_without_spaces() {
+        assert_eq!(
+            cygwin_quoted_argument(r#"IdentityFile="/cygdrive/c/Users/patpm/.ssh/key""#),
+            r#""IdentityFile=\"/cygdrive/c/Users/patpm/.ssh/key\"""#
+        );
+        assert_eq!(
+            cygwin_quoted_argument(
+                r#"UserKnownHostsFile="/cygdrive/c/Users/Some User/.ssh/known_hosts""#
+            ),
+            r#""UserKnownHostsFile=\"/cygdrive/c/Users/Some User/.ssh/known_hosts\"""#
+        );
+        assert_eq!(cygwin_quoted_argument("BatchMode=yes"), "\"BatchMode=yes\"");
+        assert_eq!(cygwin_quoted_argument(r"a\b"), r#""a\\b""#);
+    }
+
     fn publisher() -> (tempfile::TempDir, Publisher) {
         let (root, client) = crate::sftp::process_tests::connect("normal");
         let library = root.path().join("library with spaces");
