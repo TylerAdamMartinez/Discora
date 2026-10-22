@@ -271,6 +271,35 @@ mod tests {
     }
 
     #[test]
+    fn retry_reuses_empty_movie_folder_and_preserves_interrupted_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let movie = root.path().join("Example (2005)");
+        fs::create_dir(&movie).unwrap();
+        let attempt = Attempt::create(&movie).unwrap();
+        attempt.close().unwrap();
+
+        let interrupted = movie.join(".discora-rip-interrupted");
+        fs::create_dir(&interrupted).unwrap();
+        fs::write(interrupted.join("partial.mkv"), b"partial movie").unwrap();
+        let attempt = Attempt::create(&movie).unwrap();
+        assert_ne!(attempt.path(), interrupted);
+        attempt.close().unwrap();
+        assert_eq!(
+            fs::read(interrupted.join("partial.mkv")).unwrap(),
+            b"partial movie"
+        );
+
+        let final_path = named_mkv(&movie).unwrap();
+        fs::write(&final_path, b"original movie").unwrap();
+        let error = match Attempt::create(&movie) {
+            Ok(_) => panic!("existing final movie must block a retry"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Refusing to replace existing file"));
+        assert_eq!(fs::read(final_path).unwrap(), b"original movie");
+    }
+
+    #[test]
     fn publication_refuses_racing_destination_and_preserves_neighbors() {
         let root = tempfile::tempdir().unwrap();
         let movie = root.path().join("Example (2005)");
