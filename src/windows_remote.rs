@@ -285,8 +285,13 @@ impl Mount {
         let root = PathBuf::from(format!("{}:\\", letter as char));
         let mut command = Command::new(wrapper);
         command.args(["cmd", "-f", "-p", &remote.port.to_string()]);
+        // sshfs-win.exe is itself Cygwin-linked and forwards argv to sshfs.
+        // It needs the same option encoding as the bundled SSH executable.
         for option in &options {
-            command.arg("-o").arg(option);
+            use std::os::windows::process::CommandExt;
+            command.arg("-o").raw_arg(cygwin_quoted_argument(
+                option.to_str().ok_or("SSH options must be valid Unicode")?,
+            ));
         }
         command
             .args([
