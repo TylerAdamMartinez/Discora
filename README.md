@@ -99,6 +99,16 @@ scanning, selection, and confirmation. Titles are shown longest first with their
 IDs, duration, size, source playlist/file, and name when available. Choose the
 correct title explicitly; the longest title may not be the main movie.
 
+While choosing a TMDB movie, terminals at least 100 columns wide with 12 rows
+available for results show a side preview with its poster and synopsis. The
+preview follows the highlighted result, including when filtering. Posters load
+in the background and are cached in memory for the current search; they are not
+saved to movie folders. Missing or unavailable posters do not prevent selection.
+Terminal graphics are detected automatically, with a lower-resolution colored
+block fallback (including on Windows Terminal when graphics are unavailable).
+Narrower or shorter windows keep the full-width text list. Press F2 for logs
+while browsing movies. The separate `mkdir` picker remains text-only.
+
 MakeMKV runs headlessly, using its current audio/subtitle preferences. Progress,
 elapsed time, an approximate ETA, and live logs are displayed during the rip.
 The resulting file is named `Movie Title (Year)/Movie Title (Year).mkv`.

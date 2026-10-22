@@ -4,6 +4,7 @@ mod files;
 mod makemkv;
 mod metadata;
 mod platform;
+mod poster;
 mod process;
 mod rip;
 #[cfg(any(windows, test))]

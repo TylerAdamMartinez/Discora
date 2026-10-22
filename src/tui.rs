@@ -139,6 +139,7 @@ struct App {
     drives: Vec<Drive>,
     titles: Vec<Title>,
     movie: Option<Media>,
+    poster: crate::poster::Preview,
     disc: Option<u32>,
     title: Option<u32>,
     forced_disc: Option<u32>,
@@ -227,6 +228,10 @@ fn run_mounted(
     let result = {
         let _restore = TerminalGuard;
         let mut terminal = ratatui::try_init()?;
+        app.poster.start(
+            ratatui_image::picker::Picker::from_query_stdio()
+                .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()),
+        );
         app.event_loop(&mut terminal, terminated)
     };
     // If drawing or input failed, finish child termination/cleanup before returning.
@@ -253,6 +258,7 @@ impl App {
             drives: vec![],
             titles: vec![],
             movie: None,
+            poster: crate::poster::Preview::default(),
             disc: None,
             title: None,
             forced_disc: disc,
@@ -628,6 +634,7 @@ impl App {
             }
             KeyCode::Enter if self.phase == Phase::Search => {
                 if !self.query.trim().is_empty() {
+                    self.poster.reset();
                     self.start(Job::Search(self.query.trim().to_owned()), "Searching TMDB…");
                 }
             }
@@ -720,16 +727,47 @@ impl App {
         }
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw_movie_preview(
+        &mut self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        movie: Option<&Media>,
+    ) {
+        let block = Block::bordered().title("Movie preview");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(movie) = movie else {
+            frame.render_widget(Paragraph::new("No matching movies"), inner);
+            return;
+        };
+        let [title, poster, synopsis] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Percentage(65),
+            Constraint::Min(3),
+        ])
+        .areas(inner);
+        frame.render_widget(
+            Paragraph::new(safe_text(&movie.to_string())).wrap(Wrap { trim: true }),
+            title,
+        );
+        self.poster.draw(frame, poster, movie.poster_path());
+        frame.render_widget(
+            Paragraph::new(safe_text(movie.overview())).wrap(Wrap { trim: true }),
+            synopsis,
+        );
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        let browsing_movies = self.phase == Phase::Movies && !self.log_view;
         let [header, context, content, progress, logs, footer] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Min(if self.log_view { 0 } else { 5 }),
-            Constraint::Length(3),
+            Constraint::Length(if browsing_movies { 0 } else { 3 }),
             if self.log_view {
                 Constraint::Percentage(65)
             } else {
-                Constraint::Length(8)
+                Constraint::Length(if browsing_movies { 0 } else { 8 })
             },
             Constraint::Length(3),
         ])
@@ -790,6 +828,21 @@ impl App {
             );
         } else if matches!(self.phase, Phase::Movies | Phase::Drives | Phase::Titles) {
             let choices = self.choices();
+            let list_area = if self.phase == Phase::Movies
+                && content.width >= 100
+                && content.height >= 12
+            {
+                let [list, preview] =
+                    Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(content);
+                let movie = choices
+                    .get(self.selected)
+                    .map(|(index, _)| self.movies[*index].clone());
+                self.draw_movie_preview(frame, preview, movie.as_ref());
+                list
+            } else {
+                content
+            };
             let items: Vec<ListItem> = choices
                 .iter()
                 .map(|(_, s)| {
@@ -827,7 +880,7 @@ impl App {
                 .highlight_symbol("› ");
             let mut state =
                 ListState::default().with_selected((!choices.is_empty()).then_some(self.selected));
-            frame.render_stateful_widget(list, content, &mut state);
+            frame.render_stateful_widget(list, list_area, &mut state);
         } else {
             let text = match self.phase {
                 Phase::Confirm => {
@@ -983,6 +1036,61 @@ fn matches_filter(text: &str, filter: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movie_preview_tracks_filtered_selection_and_handles_small_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = RunLog::create(temp.path()).unwrap();
+        let mut app = App::new(
+            None,
+            temp.path().into(),
+            String::new(),
+            MakeMkv::new("/nonexistent".into()),
+            log,
+        );
+        app.phase = Phase::Movies;
+        app.movies = serde_json::from_str(
+            r#"[
+            {"id":1,"title":"Alpha","release_date":"2000-01-01","overview":"First synopsis"},
+            {"id":2,"title":"Beta","release_date":"2001-01-01","overview":"Second synopsis"}
+        ]"#,
+        )
+        .unwrap();
+        fn screen(app: &mut App, width: u16, height: u16) -> String {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        }
+        let text = screen(&mut app, 120, 30);
+        assert!(text.contains("Movie preview"));
+        assert!(text.contains("First synopsis"));
+        assert!(text.contains("No poster available"));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let text = screen(&mut app, 120, 30);
+        assert!(text.contains("Second synopsis"));
+        assert!(!text.contains("First synopsis"));
+        app.filter = "Beta".into();
+        app.selected = 0;
+        assert!(screen(&mut app, 120, 30).contains("Second synopsis"));
+        app.filter = "No match".into();
+        assert!(screen(&mut app, 120, 30).contains("No matching movies"));
+        app.filter.clear();
+        for (width, height) in [(99, 30), (120, 18), (10, 5), (1, 1)] {
+            assert!(!screen(&mut app, width, height).contains("Movie preview"));
+        }
+        app.log_view = true;
+        assert!(!screen(&mut app, 120, 30).contains("Movie preview"));
+        app.log_view = false;
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!screen(&mut app, 120, 30).contains("Movie preview"));
+    }
 
     #[test]
     fn movie_header_shows_destination_on_one_row_without_a_gap() {

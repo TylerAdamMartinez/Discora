@@ -18,9 +18,24 @@ pub struct Media {
     name: Option<String>,
     release_date: Option<String>,
     first_air_date: Option<String>,
+    poster_path: Option<String>,
+    overview: Option<String>,
 }
 
 impl Media {
+    pub fn poster_path(&self) -> Option<&str> {
+        self.poster_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+    }
+
+    pub fn overview(&self) -> &str {
+        self.overview
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or("No synopsis available")
+    }
+
     pub fn title(&self) -> &str {
         self.title
             .as_deref()
@@ -130,6 +145,25 @@ pub fn movie_destination(root: &Path, movie: &Media) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_metadata_handles_missing_null_and_blank_values() {
+        for extra in [
+            "",
+            r#", "poster_path":null,"overview":null"#,
+            r#", "poster_path":"", "overview":"  ""#,
+        ] {
+            let media: Media =
+                serde_json::from_str(&format!(r#"{{"id":1,"title":"Movie"{extra}}}"#)).unwrap();
+            assert_eq!(media.poster_path(), None);
+            assert_eq!(media.overview(), "No synopsis available");
+        }
+        let media: Media =
+            serde_json::from_str(r#"{"id":1,"poster_path":"/poster.jpg","overview":"A story."}"#)
+                .unwrap();
+        assert_eq!(media.poster_path(), Some("/poster.jpg"));
+        assert_eq!(media.overview(), "A story.");
+    }
 
     #[test]
     fn windows_names_are_safe_and_valid_names_are_preserved() {
