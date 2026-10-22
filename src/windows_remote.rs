@@ -178,8 +178,17 @@ impl Mount {
         if !ssh.is_file() {
             return Err("SSHFS-Win installation is missing bin/ssh.exe".into());
         }
+        log.write(
+            "sshfs",
+            &format!(
+                "Using SSHFS-Win executable {}; bundled SSH {}",
+                wrapper.display(),
+                ssh.display()
+            ),
+        )?;
         let options = ssh_options(remote)?;
         let mut control = Command::new(ssh);
+        control.arg("-vvv");
         for option in &options {
             control.arg("-o").arg(option);
         }
@@ -223,7 +232,19 @@ impl Mount {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(fs::OpenOptions::new().append(true).open(&log.path)?);
-        let process = ChildGuard::spawn(&mut command)?;
+        log.write("sshfs", &format!("Starting Windows mount: {command:?}"))?;
+        let process = ChildGuard::spawn(&mut command).map_err(|error| {
+            let _ = log.write("sshfs", &format!("Cannot start Windows mount: {error}"));
+            error
+        })?;
+        log.write(
+            "sshfs",
+            &format!(
+                "Mount process started (PID {}); waiting up to 20 seconds for {}",
+                process.child.id(),
+                root.display()
+            ),
+        )?;
         let publisher = Publisher {
             root: root.clone(),
             remote_root: remote.movies_path.clone(),
@@ -255,7 +276,12 @@ impl Mount {
                 }
                 thread::sleep(Duration::from_millis(50));
             }
+            log.write(
+                "sshfs",
+                "Mount is visible; checking remote write, sync, and hard-link publication",
+            )?;
             mount.publisher.preflight(cancel)?;
+            log.write("sshfs", "Remote publication checks passed")?;
             log.write(
                 "sshfs",
                 &format!("Mounted remote movie library at {}", mount.root.display()),

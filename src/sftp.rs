@@ -42,13 +42,23 @@ fn exchange(input: &mut impl Write, output: &mut impl Read, packet: &[u8]) -> io
     input.write_all(packet)?;
     input.flush()?;
     let mut size = [0; 4];
-    output.read_exact(&mut size)?;
+    output.read_exact(&mut size).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Reading SFTP response length: {error}"),
+        )
+    })?;
     let size = u32::from_be_bytes(size) as usize;
     if size == 0 || size > MAX_PACKET {
         return Err(io::Error::other("Invalid SFTP packet size"));
     }
     let mut response = vec![0; size];
-    output.read_exact(&mut response)?;
+    output.read_exact(&mut response).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Reading SFTP response body ({size} bytes): {error}"),
+        )
+    })?;
     Ok(response)
 }
 
@@ -60,6 +70,7 @@ pub struct Client {
     next_id: u32,
     failed: bool,
     timeout: Duration,
+    log: RunLog,
 }
 impl Client {
     pub fn connect(command: &mut Command, cancel: &AtomicBool, log: &RunLog) -> Result<Self> {
@@ -68,7 +79,21 @@ impl Client {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(errors);
-        let mut process = ChildGuard::spawn(command)?;
+        log.write(
+            "sftp",
+            &format!("Starting SSH control process: {command:?}"),
+        )?;
+        let mut process = ChildGuard::spawn(command).map_err(|error| {
+            let _ = log.write(
+                "sftp",
+                &format!("Cannot start SSH control process: {error}"),
+            );
+            error
+        })?;
+        log.write(
+            "sftp",
+            &format!("SSH control process started (PID {})", process.child.id()),
+        )?;
         let mut input = process.child.stdin.take().ok_or("No SSH stdin")?;
         let mut output = process.child.stdout.take().ok_or("No SSH stdout")?;
         let (tx, requests) = mpsc::channel::<Vec<u8>>();
@@ -90,9 +115,28 @@ impl Client {
             next_id: 0,
             failed: false,
             timeout: TIMEOUT,
+            log: log.clone(),
         };
-        let hello = client.exchange(vec![1, 0, 0, 0, 3], cancel)?;
-        validate_hello(&hello)?;
+        log.write(
+            "sftp",
+            "Sending SFTP v3 initialization; waiting for server greeting",
+        )?;
+        let hello = client
+            .exchange(vec![1, 0, 0, 0, 3], cancel)
+            .map_err(|error| {
+                format!(
+                    "SFTP initialization failed: {error}; see {} for SSH diagnostics",
+                    log.path.display()
+                )
+            })?;
+        validate_hello(&hello).map_err(|error| {
+            let _ = log.write("sftp", &format!("SFTP greeting rejected: {error}"));
+            error
+        })?;
+        log.write(
+            "sftp",
+            "SFTP v3 connected; server supports hardlink and fsync extensions",
+        )?;
         Ok(client)
     }
     fn exchange(&mut self, packet: Vec<u8>, cancel: &AtomicBool) -> Result<Vec<u8>> {
@@ -122,7 +166,20 @@ impl Client {
                 Err(_) => break Err("SFTP connection closed".into()),
             }
         };
-        if result.is_err() {
+        if let Err(error) = &result {
+            let status = match self.process.child.try_wait() {
+                Ok(Some(status)) => format!("exited with {status}"),
+                Ok(None) => "still running before cleanup".to_owned(),
+                Err(error) => format!("status unavailable: {error}"),
+            };
+            let _ = self.log.write(
+                "sftp",
+                &format!(
+                    "SFTP exchange failed after {:?}: {error}; SSH PID {} {status}",
+                    started.elapsed(),
+                    self.process.child.id()
+                ),
+            );
             self.failed = true;
             self.process.stop();
         }
@@ -428,7 +485,27 @@ while True:
     #[test]
     fn authentication_failure_and_missing_extensions_fail_connection() {
         for mode in ["auth-fail", "no-extensions"] {
-            assert!(connect(mode).1.is_err());
+            let (root, result) = connect(mode);
+            let error = match result {
+                Ok(_) => panic!("connection should fail"),
+                Err(error) => error.to_string(),
+            };
+            let log_path = fs::read_dir(root.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "log"))
+                .unwrap();
+            let text = fs::read_to_string(log_path).unwrap();
+            assert!(text.contains("Starting SSH control process"));
+            if mode == "auth-fail" {
+                assert!(text.contains("Permission denied"));
+                assert!(text.contains("SFTP exchange failed"));
+                assert!(text.contains("SSH PID"));
+                assert!(error.contains("SFTP initialization failed"));
+                assert!(error.contains("Reading SFTP response length"));
+            } else {
+                assert!(text.contains("SFTP greeting rejected"));
+            }
         }
     }
     #[test]

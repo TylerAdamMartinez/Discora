@@ -183,6 +183,12 @@ OpenSSH agent bridging is not included: use a key or an agent compatible with
 the bundled SSH client. The bundled client's default identities use its own home
 configuration; an explicit `identity_file` is the most predictable setup.
 
+Windows connection logs include verbose bundled SSH diagnostics, executable and
+key/known-hosts paths, SFTP initialization and process status, and SSHFS mount
+progress. Use F2 or the on-disk log above to inspect connection failures. Logs
+include usernames, host addresses, and local paths, but do not log private-key
+contents.
+
 The friend's `discora.toml` can contain only:
 
 ```toml

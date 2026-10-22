@@ -21,11 +21,14 @@ pub struct RunLog {
 impl RunLog {
     pub fn create(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory)?;
-        let (file, path) = tempfile::Builder::new()
+        let (_file, path) = tempfile::Builder::new()
             .prefix("rip-")
             .suffix(".log")
             .tempfile_in(directory)?
             .keep()?;
+        // Child stderr also appends to this path; all writers must use append
+        // mode so a later application entry cannot overwrite SSH diagnostics.
+        let file = fs::OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
             path,
             file: Arc::new(Mutex::new(file)),
@@ -229,6 +232,22 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_entries_preserve_appended_child_diagnostics() {
+        let root = tempfile::tempdir().unwrap();
+        let log = RunLog::create(root.path()).unwrap();
+        log.write("session", "before SSH").unwrap();
+        let mut stderr = fs::OpenOptions::new().append(true).open(&log.path).unwrap();
+        writeln!(stderr, "SSH authentication diagnostic").unwrap();
+        log.write("sshfs", "after SSH").unwrap();
+        let text = fs::read_to_string(&log.path).unwrap();
+        assert!(text.contains("before SSH"));
+        assert!(text.contains("SSH authentication diagnostic\n"));
+        assert!(
+            text.find("SSH authentication diagnostic").unwrap() < text.find("after SSH").unwrap()
+        );
+    }
 
     #[test]
     fn publication_refuses_racing_destination_and_preserves_neighbors() {
