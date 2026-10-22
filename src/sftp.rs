@@ -74,11 +74,10 @@ pub struct Client {
 }
 impl Client {
     pub fn connect(command: &mut Command, cancel: &AtomicBool, log: &RunLog) -> Result<Self> {
-        let errors = std::fs::OpenOptions::new().append(true).open(&log.path)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(errors);
+            .stderr(Stdio::piped());
         log.write(
             "sftp",
             &format!("Starting SSH control process: {command:?}"),
@@ -90,6 +89,7 @@ impl Client {
             );
             error
         })?;
+        process.log_stderr(log, "ssh-stderr");
         log.write(
             "sftp",
             &format!("SSH control process started (PID {})", process.child.id()),
@@ -367,6 +367,8 @@ import os, sys, struct, time
 from pathlib import Path
 mode = sys.argv[1]
 if mode == 'auth-fail':
+    # More than a pipe buffer: connection failure must drain all diagnostics.
+    sys.stderr.write('~' * 131072 + '\n')
     print('Permission denied', file=sys.stderr)
     sys.exit(1)
 handles = {}
@@ -499,6 +501,8 @@ while True:
             assert!(text.contains("Starting SSH control process"));
             if mode == "auth-fail" {
                 assert!(text.contains("Permission denied"));
+                assert!(text.contains("[ssh-stderr]"));
+                assert_eq!(text.matches('~').count(), 131072);
                 assert!(text.contains("SFTP exchange failed"));
                 assert!(text.contains("SSH PID"));
                 assert!(error.contains("SFTP initialization failed"));

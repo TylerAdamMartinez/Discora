@@ -7,6 +7,7 @@ use std::{io, thread, time::Duration};
 pub struct ChildGuard {
     pub child: Child,
     pub stopped: bool,
+    stderr_logger: Option<thread::JoinHandle<()>>,
     #[cfg(windows)]
     job: std::os::windows::io::OwnedHandle,
 }
@@ -19,6 +20,7 @@ impl ChildGuard {
             Ok(Self {
                 child: command.process_group(0).spawn()?,
                 stopped: false,
+                stderr_logger: None,
             })
         }
         #[cfg(windows)]
@@ -55,6 +57,7 @@ impl ChildGuard {
                 let mut guard = Self {
                     child,
                     stopped: false,
+                    stderr_logger: None,
                     job,
                 };
                 let setup = (|| {
@@ -95,6 +98,34 @@ impl ChildGuard {
                 }
                 Ok(guard)
             }
+        }
+    }
+
+    /// Drain stderr concurrently through Rust instead of passing the log file
+    /// handle to a child runtime. Fixed-size reads also bound memory usage.
+    #[cfg(any(windows, test))]
+    pub fn log_stderr(&mut self, log: &crate::rip::RunLog, stream: &'static str) {
+        use std::io::Read;
+        if let Some(mut stderr) = self.child.stderr.take() {
+            let log = log.clone();
+            self.stderr_logger = Some(thread::spawn(move || {
+                let mut buffer = [0; 4096];
+                loop {
+                    match stderr.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            let text = String::from_utf8_lossy(&buffer[..count]);
+                            let _ = log.write(stream, text.trim_end_matches(['\r', '\n']));
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => {
+                            let _ =
+                                log.write(stream, &format!("Cannot read child stderr: {error}"));
+                            break;
+                        }
+                    }
+                }
+            }));
         }
     }
 
@@ -143,6 +174,9 @@ impl ChildGuard {
             }
         }
         let _ = self.child.wait();
+        if let Some(logger) = self.stderr_logger.take() {
+            let _ = logger.join();
+        }
     }
 }
 impl Drop for ChildGuard {

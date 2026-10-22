@@ -81,12 +81,14 @@ fn probe_ssh_launcher(ssh: &Path, cancel: &AtomicBool, log: &RunLog) -> Result<(
         .arg("-V")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(fs::OpenOptions::new().append(true).open(&log.path)?);
+        .stderr(Stdio::piped());
     let mut process = ChildGuard::spawn(&mut command)?;
+    process.log_stderr(log, "ssh-probe-stderr");
     let started = Instant::now();
     loop {
         check_cancel(cancel)?;
         if let Some(status) = process.child.try_wait()? {
+            process.stop();
             let code = status
                 .code()
                 .map(|code| format!("0x{:08X}", code as u32))
@@ -104,7 +106,9 @@ fn probe_ssh_launcher(ssh: &Path, cancel: &AtomicBool, log: &RunLog) -> Result<(
             }
             log.write(
                 "ssh-probe",
-                &format!("ssh -V stdout: {stdout:?}; version stderr is written directly above"),
+                &format!(
+                    "ssh -V stdout: {stdout:?}; version stderr is captured as ssh-probe-stderr"
+                ),
             )?;
             return Ok(());
         }
@@ -286,12 +290,13 @@ impl Mount {
             .arg(format!("{}:", letter as char))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(fs::OpenOptions::new().append(true).open(&log.path)?);
+            .stderr(Stdio::piped());
         log.write("sshfs", &format!("Starting Windows mount: {command:?}"))?;
-        let process = ChildGuard::spawn(&mut command).map_err(|error| {
+        let mut process = ChildGuard::spawn(&mut command).map_err(|error| {
             let _ = log.write("sshfs", &format!("Cannot start Windows mount: {error}"));
             error
         })?;
+        process.log_stderr(log, "sshfs-stderr");
         log.write(
             "sshfs",
             &format!(
