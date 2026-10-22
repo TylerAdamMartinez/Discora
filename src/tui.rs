@@ -783,6 +783,25 @@ impl App {
                 .block(Block::bordered()),
             header,
         );
+        let version = concat!("v", env!("CARGO_PKG_VERSION"));
+        let header_inner = Block::bordered().inner(header);
+        let version_width = version.len() as u16;
+        // Keep the title centered, hiding the version if the two would overlap.
+        if header_inner.height > 0 && header_inner.width >= version_width * 2 + 9 {
+            frame.render_widget(
+                Paragraph::new(version).style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                ratatui::layout::Rect::new(
+                    header_inner.right() - version_width,
+                    header_inner.y,
+                    version_width,
+                    1,
+                ),
+            );
+        }
         let movie = self
             .movie
             .as_ref()
