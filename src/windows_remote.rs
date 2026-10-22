@@ -293,10 +293,15 @@ impl Mount {
                 option.to_str().ok_or("SSH options must be valid Unicode")?,
             ));
         }
+        // Match SSHFS-Win's default service mapping: present remote entries as
+        // owned by the mounting Windows user/group. POSIX mode bits alone do
+        // not convey named server ACL grants to WinFsp (e.g. a library owned
+        // by someone other than the SFTP account). The server still enforces
+        // the authenticated account's permissions on every operation.
         command
             .args([
                 "-o",
-                "ssh_command=/usr/bin/ssh.exe,idmap=user,direct_io,sshfs_sync,cache=no,attr_timeout=0,entry_timeout=0,negative_timeout=0",
+                "ssh_command=/usr/bin/ssh.exe,idmap=user,uid=-1,gid=-1,direct_io,sshfs_sync,cache=no,attr_timeout=0,entry_timeout=0,negative_timeout=0",
             ])
             .arg(format!(
                 "{}@{}:{}",
@@ -306,6 +311,7 @@ impl Mount {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        log.write("sshfs", "Mapping mount ownership to the current Windows user/group (uid=-1,gid=-1); server permissions remain authoritative")?;
         log.write("sshfs", &format!("Starting Windows mount: {command:?}"))?;
         let mut process = ChildGuard::spawn(&mut command).map_err(|error| {
             let _ = log.write("sshfs", &format!("Cannot start Windows mount: {error}"));

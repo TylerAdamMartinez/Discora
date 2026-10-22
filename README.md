@@ -183,6 +183,10 @@ OpenSSH agent bridging is not included: use a key or an agent compatible with
 the bundled SSH client. The bundled client's default identities use its own home
 configuration; an explicit `identity_file` is the most predictable setup.
 
+The Windows mount presents ownership as the mounting Windows user/group
+(`uid=-1,gid=-1`), matching SSHFS-Win's default service mapping. The receiving
+server still enforces the SSH account's permissions and ACLs for every operation.
+
 Windows connection logs include verbose bundled SSH diagnostics, executable and
 key/known-hosts paths, SFTP initialization and process status, and SSHFS mount
 progress. Use F2 or the on-disk log above to inspect connection failures. Logs
