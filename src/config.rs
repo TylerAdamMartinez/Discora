@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::destination::{Destination, RipSettings};
-use inquire::Text;
+use crate::storage::StorageUnits;
+use inquire::{Select, Text};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -17,6 +18,8 @@ pub struct LibraryPaths {
     pub tv_shows_path: Option<PathBuf>,
     #[serde(default)]
     pub rip: RipSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_units: Option<StorageUnits>,
     // Preserve unrelated settings when completing a partial config.
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
@@ -24,36 +27,64 @@ pub struct LibraryPaths {
 
 /// An explicit movie path always selects local output, including when the saved
 /// destination is remote. Utilities continue to resolve only local library paths.
-pub fn resolve_rip(overrides: LibraryPaths) -> Result<Destination> {
+pub fn resolve_rip(overrides: LibraryPaths) -> Result<(Destination, StorageUnits)> {
     if let Some(path) = &overrides.movies_path {
         validate_path(path)?;
-        return Ok(Destination::Local(path.clone()));
+        let units = crate::platform::config_directory()
+            .and_then(|dir| load_at(&dir.join("discora/discora.toml")).ok())
+            .and_then(|saved| saved.storage_units)
+            .unwrap_or_default();
+        return Ok((Destination::Local(path.clone()), units));
     }
     let config_path = crate::platform::config_directory()
         .ok_or("Cannot locate the user config directory; supply --movies-path")?
         .join("discora/discora.toml");
     if let Some(remote) = remote_at(&config_path)? {
-        return Ok(Destination::Sshfs(remote));
+        return Ok((
+            Destination::Sshfs(remote),
+            load_at(&config_path)?.storage_units.unwrap_or_default(),
+        ));
     }
     let paths = resolve(overrides, false)?;
-    Ok(Destination::Local(
-        paths.movies_path.expect("resolved movie path"),
+    Ok((
+        Destination::Local(paths.movies_path.expect("resolved movie path")),
+        paths.storage_units.unwrap_or_default(),
     ))
 }
 
 fn remote_at(path: &Path) -> Result<Option<crate::destination::Remote>> {
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("Cannot read config {}: {error}", path.display()).into()),
-    };
-    let saved: LibraryPaths = toml::from_str(&contents)
-        .map_err(|error| format!("Invalid config {}: {error}", path.display()))?;
+    let saved = load_at(path)?;
     saved
         .rip
         .destination
         .remote()
         .map_err(|error| format!("Config {}: {error}", path.display()).into())
+}
+
+fn load_at(path: &Path) -> Result<LibraryPaths> {
+    match fs::read_to_string(path) {
+        Ok(contents) => toml::from_str(&contents)
+            .map_err(|error| format!("Invalid config {}: {error}", path.display()).into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(LibraryPaths::default()),
+        Err(error) => Err(format!("Cannot read config {}: {error}", path.display()).into()),
+    }
+}
+
+fn prompt_storage_units() -> Result<StorageUnits> {
+    println!("Decimal (GB/TB): divides by 1,000; 1 TB = 1,000,000,000,000 bytes.");
+    println!("Binary (GiB/TiB): divides by 1,024; 1 TiB = 1,099,511,627,776 bytes.");
+    println!("Example: the same 2,000,000,000,000 bytes displays as 2 TB or 1.82 TiB.");
+    println!("Only the display changes; storage capacity stays the same.");
+    let choice = Select::new(
+        "Storage display units:",
+        vec!["Decimal (GB/TB)", "Binary (GiB/TiB)"],
+    )
+    .prompt()?;
+    Ok(if choice.starts_with("Binary") {
+        StorageUnits::Binary
+    } else {
+        StorageUnits::Decimal
+    })
 }
 
 pub fn parse_path(value: &str) -> std::result::Result<PathBuf, String> {
@@ -101,7 +132,7 @@ pub fn resolve(overrides: LibraryPaths, need_tv: bool) -> Result<LibraryPaths> {
         .ok_or("Cannot locate the user config directory; supply the required library path flags")?
         .join("discora")
         .join("discora.toml");
-    resolve_at(
+    resolve_with_prompts(
         overrides,
         need_tv,
         &path,
@@ -119,29 +150,38 @@ pub fn resolve(overrides: LibraryPaths, need_tv: bool) -> Result<LibraryPaths> {
                 }
             }
         },
+        prompt_storage_units,
     )
 }
 
+#[cfg(test)]
 fn resolve_at(
     overrides: LibraryPaths,
     need_tv: bool,
     config_path: &Path,
     interactive: bool,
+    prompt: impl FnMut(&str, Option<&str>) -> Result<PathBuf>,
+) -> Result<LibraryPaths> {
+    resolve_with_prompts(overrides, need_tv, config_path, interactive, prompt, || {
+        Ok(StorageUnits::Decimal)
+    })
+}
+
+fn resolve_with_prompts(
+    overrides: LibraryPaths,
+    need_tv: bool,
+    config_path: &Path,
+    interactive: bool,
     mut prompt: impl FnMut(&str, Option<&str>) -> Result<PathBuf>,
+    mut prompt_units: impl FnMut() -> Result<StorageUnits>,
 ) -> Result<LibraryPaths> {
     validate(&overrides, need_tv)?;
     if complete(&overrides, need_tv) {
         return Ok(overrides);
     }
-    let mut saved: LibraryPaths = match fs::read_to_string(config_path) {
-        Ok(contents) => toml::from_str(&contents)
-            .map_err(|error| format!("Invalid config {}: {error}", config_path.display()))?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => LibraryPaths::default(),
-        Err(error) => {
-            return Err(format!("Cannot read config {}: {error}", config_path.display()).into());
-        }
-    };
+    let mut saved = load_at(config_path)?;
     let effective = LibraryPaths {
+        storage_units: saved.storage_units,
         movies_path: overrides
             .movies_path
             .clone()
@@ -183,10 +223,14 @@ fn resolve_at(
         let default = overrides.tv_shows_path.as_deref().and_then(Path::to_str);
         saved.tv_shows_path = Some(prompt("Absolute path to TV shows:", default)?);
     }
+    if saved.storage_units.is_none() {
+        saved.storage_units = Some(prompt_units()?);
+    }
     validate(&saved, true).map_err(|error| format!("Config {}: {error}", config_path.display()))?;
     save(config_path, &saved)?;
     println!("Saved config: {}", config_path.display());
     Ok(LibraryPaths {
+        storage_units: saved.storage_units,
         movies_path: overrides.movies_path.or(saved.movies_path),
         tv_shows_path: overrides.tv_shows_path.or(saved.tv_shows_path),
         ..Default::default()
@@ -221,6 +265,99 @@ mod tests {
 
     fn no_prompt(_: &str, _: Option<&str>) -> Result<PathBuf> {
         panic!("unexpected setup prompt")
+    }
+
+    #[test]
+    fn storage_units_load_validate_and_preserve_existing_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        for (setting, expected) in [
+            ("", StorageUnits::Decimal),
+            ("storage_units = 'decimal'\n", StorageUnits::Decimal),
+            ("storage_units = 'binary'\n", StorageUnits::Binary),
+        ] {
+            let contents = format!("{setting}movies_path = '{}'\n", dir.path().display());
+            fs::write(&config, &contents).unwrap();
+            let result = resolve_with_prompts(
+                LibraryPaths::default(),
+                false,
+                &config,
+                true,
+                no_prompt,
+                || panic!("unexpected unit prompt"),
+            )
+            .unwrap();
+            assert_eq!(result.storage_units.unwrap_or_default(), expected);
+            assert_eq!(fs::read_to_string(&config).unwrap(), contents);
+        }
+        fs::write(&config, "storage_units = 'TB'").unwrap();
+        let error = load_at(&config).unwrap_err().to_string();
+        assert!(error.contains(config.to_str().unwrap()));
+        assert!(
+            error.contains("decimal") && error.contains("binary"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn setup_saves_unit_choice_and_skips_saved_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        for units in [StorageUnits::Decimal, StorageUnits::Binary] {
+            let initial = paths(None, Some(dir.path()));
+            save(&config, &initial).unwrap();
+            let mut prompted = false;
+            let result = resolve_with_prompts(
+                LibraryPaths::default(),
+                true,
+                &config,
+                true,
+                |_, _| Ok(dir.path().to_path_buf()),
+                || {
+                    prompted = true;
+                    Ok(units)
+                },
+            )
+            .unwrap();
+            assert!(prompted);
+            assert_eq!(result.storage_units, Some(units));
+            assert_eq!(load_at(&config).unwrap().storage_units, Some(units));
+            let mut partial = paths(None, Some(dir.path()));
+            partial.storage_units = Some(units);
+            save(&config, &partial).unwrap();
+            resolve_with_prompts(
+                LibraryPaths::default(),
+                true,
+                &config,
+                true,
+                |_, _| Ok(dir.path().to_path_buf()),
+                || panic!("saved units should not prompt"),
+            )
+            .unwrap();
+            assert_eq!(load_at(&config).unwrap().storage_units, Some(units));
+        }
+    }
+
+    #[test]
+    fn canceling_unit_prompt_preserves_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        for existing in [false, true] {
+            if existing {
+                fs::write(&config, "# original\n").unwrap();
+            }
+            let original = fs::read(&config).ok();
+            let result = resolve_with_prompts(
+                LibraryPaths::default(),
+                true,
+                &config,
+                true,
+                |_, _| Ok(dir.path().to_path_buf()),
+                || Err("cancelled".into()),
+            );
+            assert!(result.is_err());
+            assert_eq!(fs::read(&config).ok(), original);
+        }
     }
 
     #[test]

@@ -183,6 +183,7 @@ pub fn run(
     disc: Option<u32>,
     destination: crate::destination::Destination,
     executable: Option<PathBuf>,
+    units: crate::storage::StorageUnits,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("The rip command needs an interactive terminal".into());
@@ -201,7 +202,7 @@ pub fn run(
             let _ = log.write("sshfs", &error.to_string());
             eprintln!("Run log: {}", log.path.display());
         })?;
-    let result = run_mounted(disc, &mounted, token, makemkv, log, &terminated);
+    let result = run_mounted(disc, &mounted, token, makemkv, log, &terminated, units);
     let cleanup = mounted.close();
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
@@ -218,8 +219,10 @@ fn run_mounted(
     makemkv: MakeMkv,
     log: RunLog,
     terminated: &Arc<AtomicBool>,
+    units: crate::storage::StorageUnits,
 ) -> Result<()> {
     let mut app = App::new(disc, mounted.root.clone(), token, makemkv, log);
+    app.storage.units = units;
     app.root_label = mounted.label.clone();
     app.remote = mounted.remote.clone();
     #[cfg(windows)]
@@ -1146,26 +1149,43 @@ mod tests {
             MakeMkv::new("/nonexistent".into()),
             log,
         );
-        app.storage = crate::storage::Monitor::with_usage(2_000_000_000_000, 12_000_000_000_000);
-        for log_view in [false, true] {
-            app.log_view = log_view;
-            for (width, expected) in [
-                (100, Some("Used 2 TB out of 12 TB (16.67%)")),
-                (60, Some("2 / 12 TB (16.67%)")),
-                (28, None),
-            ] {
-                let mut terminal =
-                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
-                terminal.draw(|frame| app.draw(frame)).unwrap();
-                let buffer = terminal.backend().buffer();
-                let header: String = (0..width).map(|x| buffer[(x, 1)].symbol()).collect();
-                let title_column = (0..width).find(|x| buffer[(*x, 1)].symbol() == "D");
-                assert_eq!(title_column, Some(1 + (width - 9).div_ceil(2)));
-                assert!(header.contains(concat!("v", env!("CARGO_PKG_VERSION"))));
-                if let Some(expected) = expected {
-                    assert!(header.starts_with(&format!("│{expected}")), "{header}");
-                } else {
-                    assert!(!header.contains("TB"));
+        for (units, scale, unit) in [
+            (
+                crate::storage::StorageUnits::Decimal,
+                1_000_000_000_000,
+                "TB",
+            ),
+            (
+                crate::storage::StorageUnits::Binary,
+                1_099_511_627_776,
+                "TiB",
+            ),
+        ] {
+            app.storage = crate::storage::Monitor::with_usage(2 * scale, 12 * scale);
+            app.storage.units = units;
+            let full = format!("Used 2 {unit} out of 12 {unit} (16.67%)");
+            let compact = format!("2 / 12 {unit} (16.67%)");
+            for log_view in [false, true] {
+                app.log_view = log_view;
+                for (width, expected) in [
+                    (100, Some(full.as_str())),
+                    (60, Some(compact.as_str())),
+                    (28, None),
+                ] {
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24))
+                            .unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let header: String = (0..width).map(|x| buffer[(x, 1)].symbol()).collect();
+                    let title_column = (0..width).find(|x| buffer[(*x, 1)].symbol() == "D");
+                    assert_eq!(title_column, Some(1 + (width - 9).div_ceil(2)));
+                    assert!(header.contains(concat!("v", env!("CARGO_PKG_VERSION"))));
+                    if let Some(expected) = expected {
+                        assert!(header.starts_with(&format!("│{expected}")), "{header}");
+                    } else {
+                        assert!(!header.contains(unit));
+                    }
                 }
             }
         }

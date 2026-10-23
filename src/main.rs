@@ -181,7 +181,10 @@ fn main() -> Result<()> {
                 paths.tv_shows_path.as_deref().expect("resolved TV path"),
             )
         }
-        Commands::Rip { disc } => tui::run(disc, config::resolve_rip(overrides)?, cli.makemkv_path),
+        Commands::Rip { disc } => {
+            let (destination, units) = config::resolve_rip(overrides)?;
+            tui::run(disc, destination, cli.makemkv_path, units)
+        }
     }
 }
 

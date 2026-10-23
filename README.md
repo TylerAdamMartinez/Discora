@@ -37,6 +37,7 @@ Discora reads `discora.toml` from your OS's normal config directory:
 ```toml
 movies_path = "/absolute/path/to/movies"
 tv_shows_path = "/absolute/path/to/tv-shows"
+storage_units = "decimal" # "decimal" (GB/TB) or "binary" (GiB/TiB)
 
 [rip.destination]
 type = "local"
@@ -55,7 +56,10 @@ support, such as NTFS; FAT/exFAT destinations are not supported.
 If a required path is missing, interactive setup asks for the movie path first,
 then the TV path, skipping settings already saved. It offers CLI values as defaults
 for missing saved settings. Accepting a value during setup saves it; the explicit
-CLI override still controls the current invocation. Setup saves both settings
+CLI override still controls the current invocation. When creating or completing a
+config, setup also asks for storage display units
+if that setting is missing, with decimal preselected. It explains both choices
+and shows an example before asking. Setup saves the paths and unit choice
 before continuing, even when triggered by movie-only ripping. Cancelling setup
 leaves the existing config unchanged.
 
@@ -128,7 +132,21 @@ ripping are not included.
 | R in logs | Refresh the current page |
 
 The header shows used and total storage for the movie destination filesystem,
-with decimal units (GB/TB) and a percentage. It refreshes in the background every
+with a percentage and units selected by the top-level `storage_units` setting:
+
+- `"decimal"` (default): powers of 1,000, displayed as KB/MB/GB/TB.
+  One TB is 1,000,000,000,000 bytes.
+- `"binary"`: powers of 1,024, displayed as KiB/MiB/GiB/TiB.
+  One TiB is 1,099,511,627,776 bytes.
+
+For example, the same 2,000,000,000,000 bytes displays as **2 TB** or **1.82 TiB**.
+Only the display changes; the capacity and percentage stay the same. Existing
+configs without `storage_units` use decimal without prompting or rewriting the
+file. Edit this setting to change the display on the next run. An explicit
+`--movies-path` still works with an unreadable or invalid config, using decimal
+units in that case.
+
+The indicator refreshes in the background every
 five seconds, including while ripping. For SSHFS destinations it queries the
 mounted remote filesystem, so the reported capacity may reflect server quotas
 or limits. If statistics are unavailable, the header shows `Storage: unavailable`;

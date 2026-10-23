@@ -9,6 +9,14 @@ use std::{
 const REFRESH: Duration = Duration::from_secs(5);
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageUnits {
+    #[default]
+    Decimal,
+    Binary,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StorageUsage {
     pub used: u64,
@@ -26,18 +34,26 @@ impl StorageUsage {
         })
     }
 
-    fn label(self, compact: bool) -> String {
-        let (unit, divisor) = if self.total >= 1_000_000_000_000 {
-            ("TB", 1_000_000_000_000.0)
-        } else if self.total >= 1_000_000_000 {
-            ("GB", 1_000_000_000.0)
-        } else if self.total >= 1_000_000 {
-            ("MB", 1_000_000.0)
-        } else if self.total >= 1_000 {
-            ("KB", 1_000.0)
-        } else {
-            ("B", 1.0)
+    fn label(self, compact: bool, units: StorageUnits) -> String {
+        let scales = match units {
+            StorageUnits::Decimal => [
+                ("TB", 1_000_000_000_000_u64),
+                ("GB", 1_000_000_000),
+                ("MB", 1_000_000),
+                ("KB", 1_000),
+            ],
+            StorageUnits::Binary => [
+                ("TiB", 1_099_511_627_776_u64),
+                ("GiB", 1_073_741_824),
+                ("MiB", 1_048_576),
+                ("KiB", 1_024),
+            ],
         };
+        let (unit, divisor) = scales
+            .into_iter()
+            .find(|(_, divisor)| self.total >= *divisor)
+            .unwrap_or(("B", 1));
+        let divisor = divisor as f64;
         let number = |bytes| {
             format!("{:.2}", bytes as f64 / divisor)
                 .trim_end_matches('0')
@@ -65,6 +81,7 @@ enum Status {
 
 #[derive(Default)]
 pub struct Monitor {
+    pub units: StorageUnits,
     status: Status,
     pending: Option<(Instant, Receiver<io::Result<StorageUsage>>)>,
     next_refresh: Option<Instant>,
@@ -117,13 +134,13 @@ impl Monitor {
         let full = match self.status {
             Status::Checking => "Storage: checking…".to_owned(),
             Status::Unavailable => "Storage: unavailable".to_owned(),
-            Status::Available(usage) => usage.label(false),
+            Status::Available(usage) => usage.label(false, self.units),
         };
         if full.chars().count() <= usize::from(width) {
             return Some(full);
         }
         if let Status::Available(usage) = self.status {
-            let compact = usage.label(true);
+            let compact = usage.label(true, self.units);
             if compact.len() <= usize::from(width) {
                 return Some(compact);
             }
@@ -137,23 +154,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_decimal_units_and_rounds_percentages() {
-        let monitor = Monitor::with_usage(2_000_000_000_000, 12_000_000_000_000);
+    fn unit_families_use_correct_divisors_and_keep_percentages() {
+        for (total, decimal, binary) in [
+            (1, "B", "B"),
+            (1_024, "KB", "KiB"),
+            (1_048_576, "MB", "MiB"),
+            (1_073_741_824, "GB", "GiB"),
+            (1_099_511_627_776, "TB", "TiB"),
+        ] {
+            let usage = StorageUsage { used: total, total };
+            for (units, label) in [
+                (StorageUnits::Decimal, decimal),
+                (StorageUnits::Binary, binary),
+            ] {
+                let text = usage.label(false, units);
+                assert!(text.contains(label), "{text}");
+                assert!(text.ends_with("(100.00%)"));
+            }
+        }
+        let mut monitor = Monitor::with_usage(1_000_000_000_000, 1_000_000_000_000);
         assert_eq!(
             monitor.label(60).unwrap(),
-            "Used 2 TB out of 12 TB (16.67%)"
+            "Used 1 TB out of 1 TB (100.00%)"
         );
-        assert_eq!(monitor.label(25).unwrap(), "2 / 12 TB (16.67%)");
+        monitor.units = StorageUnits::Binary;
+        assert_eq!(
+            monitor.label(60).unwrap(),
+            "Used 931.32 GiB out of 931.32 GiB (100.00%)"
+        );
+        let usage = StorageUsage {
+            used: 1_000_000_000_000,
+            total: 2_000_000_000_000,
+        };
+        assert_eq!(
+            usage.label(true, StorageUnits::Binary),
+            "0.91 / 1.82 TiB (50.00%)"
+        );
+        assert_eq!(
+            usage.label(true, StorageUnits::Decimal),
+            "1 / 2 TB (50.00%)"
+        );
+    }
+
+    #[test]
+    fn formats_binary_units_and_rounds_percentages() {
+        let mut monitor = Monitor::with_usage(2 * 1_099_511_627_776, 12 * 1_099_511_627_776);
+        monitor.units = StorageUnits::Binary;
+        assert_eq!(
+            monitor.label(60).unwrap(),
+            "Used 2 TiB out of 12 TiB (16.67%)"
+        );
+        assert_eq!(monitor.label(25).unwrap(), "2 / 12 TiB (16.67%)");
         assert_eq!(monitor.label(10), None);
         assert_eq!(
-            Monitor::with_usage(0, 500_000_000_000).label(60).unwrap(),
-            "Used 0 GB out of 500 GB (0.00%)"
+            Monitor {
+                units: StorageUnits::Binary,
+                ..Monitor::with_usage(0, 500 * 1_073_741_824)
+            }
+            .label(60)
+            .unwrap(),
+            "Used 0 GiB out of 500 GiB (0.00%)"
         );
         assert_eq!(
-            Monitor::with_usage(1_250_000_000, 1_250_000_000)
-                .label(60)
-                .unwrap(),
-            "Used 1.25 GB out of 1.25 GB (100.00%)"
+            Monitor {
+                units: StorageUnits::Binary,
+                ..Monitor::with_usage(5 * 1_073_741_824 / 4, 5 * 1_073_741_824 / 4)
+            }
+            .label(60)
+            .unwrap(),
+            "Used 1.25 GiB out of 1.25 GiB (100.00%)"
         );
         assert!(StorageUsage::from_total_free(0, 0).is_err());
         assert!(StorageUsage::from_total_free(10, 11).is_err());
