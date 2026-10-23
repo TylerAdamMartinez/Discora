@@ -145,6 +145,7 @@ struct App {
     forced_disc: Option<u32>,
     root: PathBuf,
     root_label: String,
+    storage: crate::storage::Monitor,
     remote: Option<crate::destination::Remote>,
     #[cfg(windows)]
     publisher: Option<crate::windows_remote::Publisher>,
@@ -263,6 +264,7 @@ impl App {
             title: None,
             forced_disc: disc,
             root_label: root.display().to_string(),
+            storage: crate::storage::Monitor::default(),
             remote: None,
             #[cfg(windows)]
             publisher: None,
@@ -431,6 +433,7 @@ impl App {
     }
 
     fn poll(&mut self) {
+        self.storage.poll(&self.root, Instant::now());
         if self.phase == Phase::Busy {
             self.elapsed = self.started.elapsed();
         }
@@ -786,6 +789,18 @@ impl App {
         let version = concat!("v", env!("CARGO_PKG_VERSION"));
         let header_inner = Block::bordered().inner(header);
         let version_width = version.len() as u16;
+        // Reserve the centered title plus a one-column gap on either side.
+        let storage_width = header_inner.width.saturating_sub(7) / 2;
+        let storage_width = storage_width.saturating_sub(1);
+        if header_inner.height > 0
+            && let Some(text) = self.storage.label(storage_width)
+        {
+            frame.render_widget(
+                Paragraph::new(text).style(Style::default().fg(Color::Cyan)),
+                ratatui::layout::Rect::new(header_inner.x, header_inner.y, storage_width, 1),
+            );
+        }
+
         // Keep the title centered, hiding the version if the two would overlap.
         if header_inner.height > 0 && header_inner.width >= version_width * 2 + 9 {
             frame.render_widget(
@@ -1109,6 +1124,50 @@ mod tests {
         app.log_view = false;
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!screen(&mut app, 120, 30).contains("Movie preview"));
+    }
+
+    #[test]
+    fn storage_header_keeps_title_centered_and_compacts_without_overlap() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = RunLog::create(temp.path()).unwrap();
+        let mut app = App::new(
+            None,
+            temp.path().to_owned(),
+            String::new(),
+            MakeMkv::new("/nonexistent".into()),
+            log,
+        );
+        app.storage = crate::storage::Monitor::with_usage(2_000_000_000_000, 12_000_000_000_000);
+        for log_view in [false, true] {
+            app.log_view = log_view;
+            for (width, expected) in [
+                (100, Some("Used 2 TB out of 12 TB (16.67%)")),
+                (60, Some("2 / 12 TB (16.67%)")),
+                (28, None),
+            ] {
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let header: String = (0..width).map(|x| buffer[(x, 1)].symbol()).collect();
+                let title_column = (0..width).find(|x| buffer[(*x, 1)].symbol() == "D");
+                assert_eq!(title_column, Some(1 + (width - 9).div_ceil(2)));
+                assert!(header.contains(concat!("v", env!("CARGO_PKG_VERSION"))));
+                if let Some(expected) = expected {
+                    assert!(header.starts_with(&format!("│{expected}")), "{header}");
+                } else {
+                    assert!(!header.contains("TB"));
+                }
+            }
+        }
+        app.storage = crate::storage::Monitor::default();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let header: String = (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
+            .collect();
+        assert!(header.contains("Storage: checking…"));
     }
 
     #[test]

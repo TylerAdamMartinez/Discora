@@ -1,6 +1,6 @@
 [package]
 name = "discora"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 
 [dependencies]
@@ -20,7 +20,7 @@ serde_json = "1.0.154"
 
 [target.'cfg(unix)'.dependencies]
 reqwest = { version = "0.13.5", features = ["blocking", "json", "query"] }
-nix = { version = "0.31.3", features = ["signal", "process"] }
+nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
 signal-hook = "0.4.5"
 
 [target.'cfg(windows)'.dependencies]

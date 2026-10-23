@@ -140,6 +140,46 @@ pub fn app_data(variable: &str) -> Option<PathBuf> {
         .filter(|p| p.is_absolute())
 }
 
+/// Query only the filesystem containing the destination; never substitute another drive.
+pub fn storage_usage(path: &Path) -> std::io::Result<crate::storage::StorageUsage> {
+    #[cfg(unix)]
+    {
+        let stats = nix::sys::statvfs::statvfs(path)?;
+        let total = stats.blocks().checked_mul(stats.fragment_size());
+        let free = stats.blocks_free().checked_mul(stats.fragment_size());
+        match (total, free) {
+            (Some(total), Some(free)) => crate::storage::StorageUsage::from_total_free(total, free),
+            _ => Err(std::io::Error::other("Filesystem capacity overflow")),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let mut path: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if path.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NUL in destination path",
+            ));
+        }
+        path.push(0);
+        let mut total = 0;
+        let mut free = 0;
+        let success = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+                path.as_ptr(),
+                std::ptr::null_mut(),
+                &mut total,
+                &mut free,
+            )
+        };
+        if success == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        crate::storage::StorageUsage::from_total_free(total, free)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

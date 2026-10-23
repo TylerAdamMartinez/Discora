@@ -127,6 +127,14 @@ ripping are not included.
 | PageUp/PageDown, Home/End | Navigate the full on-disk log |
 | R in logs | Refresh the current page |
 
+The header shows used and total storage for the movie destination filesystem,
+with decimal units (GB/TB) and a percentage. It refreshes in the background every
+five seconds, including while ripping. For SSHFS destinations it queries the
+mounted remote filesystem, so the reported capacity may reflect server quotas
+or limits. If statistics are unavailable, the header shows `Storage: unavailable`;
+this does not interrupt ripping. On narrow terminals the indicator shortens or
+hides to keep the title centered.
+
 Logs are retained at `$XDG_STATE_HOME/discora/logs`, or
 `~/.local/state/discora/logs` when `XDG_STATE_HOME` is unset. The log path is
 shown in the interface and printed on exit. On Windows, logs live at

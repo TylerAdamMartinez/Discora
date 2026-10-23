@@ -9,6 +9,7 @@ mod process;
 mod rip;
 #[cfg(any(windows, test))]
 mod sftp;
+mod storage;
 #[cfg(test)]
 mod test_support;
 mod tui;
