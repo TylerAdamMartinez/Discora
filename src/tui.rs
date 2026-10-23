@@ -229,10 +229,19 @@ fn run_mounted(
     let result = {
         let _restore = TerminalGuard;
         let mut terminal = ratatui::try_init()?;
-        app.poster.start(
-            ratatui_image::picker::Picker::from_query_stdio()
-                .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()),
-        );
+        let mut picker = ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
+
+        // Work around a graphics protocol compatibility issue with WezTerm.
+        // ratatui-image auto-detects the Kitty protocol, but rendering through it
+        // produces corrupted image placeholders instead of displaying the poster.
+        // Force iTerm2, which WezTerm supports, while preserving automatic protocol
+        // detection for other terminals.
+        if std::env::var("TERM_PROGRAM").as_deref() == Ok("WezTerm") {
+            picker.set_protocol_type(ratatui_image::picker::ProtocolType::Iterm2);
+        }
+
+        app.poster.start(picker);
         app.event_loop(&mut terminal, terminated)
     };
     // If drawing or input failed, finish child termination/cleanup before returning.
