@@ -103,6 +103,12 @@ scanning, selection, and confirmation. Titles are shown longest first with their
 IDs, duration, size, source playlist/file, and name when available. Choose the
 correct title explicitly; the longest title may not be the main movie.
 
+On the confirmation screen, **Enter starts ripping** and **Esc returns to title
+selection**. Going back preserves the filter and highlighted title without
+rescanning. Starting the rip launches a separate MakeMKV process, which opens
+and analyzes the disc again. See the [integration investigation](MAKEMKV_INTEGRATION.md)
+for the current limitations and alternatives.
+
 While choosing a TMDB movie, terminals at least 100 columns wide with 12 rows
 available for results show a side preview with its poster and synopsis. The
 preview follows the highlighted result, including when filtering. Posters load

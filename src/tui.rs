@@ -643,6 +643,7 @@ impl App {
                     self.filter.clear();
                 } else if self.phase == Phase::Confirm {
                     self.phase = Phase::Titles;
+                    self.status = "Choose a title, then press Enter to review it.".into();
                 } else {
                     self.quit = true;
                 }
@@ -937,7 +938,7 @@ impl App {
                         .map(ToString::to_string)
                         .unwrap_or_default();
                     format!(
-                        "Ready to rip\nDisc: {}\n{title}\nOutput: {}\nOne movie title; MakeMKV default audio/subtitle tracks.\nExisting files will not be replaced.",
+                        "Ready to rip\nEnter: Start ripping\nEsc: Back to titles\n\nDisc: {}\n{title}\nOutput: {}\nOne movie title; MakeMKV default audio/subtitle tracks.\nExisting files will not be replaced.",
                         self.disc.unwrap_or(0),
                         self.destination
                             .as_ref()
@@ -1034,6 +1035,8 @@ impl App {
             "F2/Esc: close logs · Ctrl+C: cancel and exit"
         } else if self.phase == Phase::Busy {
             "Esc: cancel · L/F2: full log · Ctrl+C: cancel and exit"
+        } else if self.phase == Phase::Confirm {
+            "Enter: Start ripping · Esc: Back to titles · F2: full log · Ctrl+C: exit"
         } else {
             "↑↓: select · Enter: continue · Esc: back/exit · F2: full log · Ctrl+C: exit"
         };
@@ -1327,6 +1330,8 @@ mod tests {
             &executable,
             r#"import sys
 from pathlib import Path
+with Path(__file__).with_suffix('.calls').open('a') as calls:
+    calls.write(' '.join(sys.argv[1:]) + '\n')
 if 'disc:9999' in sys.argv:
     print('DRV:2,2,999,1,"Drive","DISC","/dev/sr2"')
 elif 'info' in sys.argv:
@@ -1364,16 +1369,52 @@ else:
         wait_for_task(&mut app);
         assert!(app.phase == Phase::Titles, "{}", app.status);
         assert_eq!(app.titles[0].id, 7);
+        app.key(enter);
+        assert_eq!(app.title, Some(7));
+        assert!(app.phase == Phase::Confirm);
+        let calls_path = root.path().join("makemkvcon.calls");
+        let calls_before_back = fs::read_to_string(&calls_path).unwrap();
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.phase == Phase::Titles);
+        assert_eq!(app.selected, 0);
+        assert!(app.worker.is_none());
+        assert_eq!(fs::read_to_string(&calls_path).unwrap(), calls_before_back);
         app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.key(enter);
         assert!(app.phase == Phase::Confirm);
         assert_eq!(app.title, Some(1));
         assert!(!app.destination.as_ref().unwrap().exists());
+        // Back navigation preserves both the highlighted row and an active filter.
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.selected, 1);
+        app.key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        let filter = app.filter.clone();
+        let selected = app.selected;
+        app.key(enter);
+        assert_eq!(app.title, Some(1));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.phase == Phase::Titles);
+        assert_eq!(app.filter, filter);
+        assert_eq!(app.selected, selected);
+        assert!(app.worker.is_none());
+        assert_eq!(fs::read_to_string(&calls_path).unwrap(), calls_before_back);
+        app.key(enter);
         // Confirm and log screens must also render in small/resized terminals.
         for (width, height) in [(110, 30), (80, 24), (40, 12)] {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let rendered = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(rendered.contains("Enter: Start ripping"));
+            assert!(rendered.contains("Esc: Back to titles"));
         }
         app.key(enter);
         wait_for_task(&mut app);
