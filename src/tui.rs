@@ -177,6 +177,7 @@ struct App {
     quit_when_idle: bool,
     quit: bool,
     saved: Option<PathBuf>,
+    saved_at: Option<Instant>,
 }
 
 impl Drop for App {
@@ -324,6 +325,7 @@ impl App {
             quit_when_idle: false,
             quit: false,
             saved: None,
+            saved_at: None,
         }
     }
 
@@ -595,6 +597,7 @@ impl App {
             }
             Ok(Outcome::Saved(path)) => {
                 self.saved = Some(path);
+                self.saved_at = Some(Instant::now());
                 self.phase = Phase::Done;
                 self.progress = Some(1.0);
                 self.status = "Rip complete; movie file named and partial output cleaned up".into();
@@ -1159,6 +1162,19 @@ impl App {
             ))),
             footer,
         );
+        if self.saved_screen_inverted(Instant::now()) {
+            let area = frame.area();
+            frame
+                .buffer_mut()
+                .set_style(area, Style::default().add_modifier(Modifier::REVERSED));
+        }
+    }
+
+    fn saved_screen_inverted(&self, now: Instant) -> bool {
+        self.phase == Phase::Done
+            && self
+                .saved_at
+                .is_some_and(|start| now.saturating_duration_since(start).as_secs() % 2 == 1)
     }
 }
 
@@ -1196,6 +1212,34 @@ fn matches_filter(text: &str, filter: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_screen_alternates_each_second_only_when_done() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            None,
+            temp.path().into(),
+            String::new(),
+            MakeMkv::new("/nonexistent".into()),
+            RunLog::create(temp.path()).unwrap(),
+        );
+        app.complete(Ok(Outcome::Saved(temp.path().join("movie.mkv"))));
+        let start = app.saved_at.unwrap();
+        for (millis, inverted) in [
+            (0, false),
+            (999, false),
+            (1000, true),
+            (2000, false),
+            (3000, true),
+        ] {
+            assert_eq!(
+                app.saved_screen_inverted(start + Duration::from_millis(millis)),
+                inverted
+            );
+        }
+        app.phase = Phase::Failed;
+        assert!(!app.saved_screen_inverted(start + Duration::from_secs(1)));
+    }
 
     #[test]
     fn movie_preview_tracks_filtered_selection_and_handles_small_windows() {
