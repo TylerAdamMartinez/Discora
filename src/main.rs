@@ -182,8 +182,14 @@ fn main() -> Result<()> {
             )
         }
         Commands::Rip { disc } => {
-            let (destination, units) = config::resolve_rip(overrides)?;
-            tui::run(disc, destination, cli.makemkv_path, units)
+            let (destination, units, auto_select_single_drive) = config::resolve_rip(overrides)?;
+            tui::run(
+                disc,
+                destination,
+                cli.makemkv_path,
+                units,
+                auto_select_single_drive,
+            )
         }
     }
 }

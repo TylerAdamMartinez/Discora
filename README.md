@@ -23,7 +23,9 @@ discora file-cleanup --movies-path /path/to/movies --tv-shows-path "/path/to/TV 
 
 Flags override only their corresponding settings for that invocation; they do not
 rewrite your config. If all paths required by the command are explicit, Discora
-skips config loading entirely. `rip` needs only the movie path; `mkdir` and
+skips library-path config loading. The ripper still reads saved storage display
+and drive-selection preferences when the config is readable and valid; otherwise
+it uses their defaults. `rip` needs only the movie path; `mkdir` and
 `file-cleanup` need both library paths.
 
 Discora reads `discora.toml` from your OS's normal config directory:
@@ -38,6 +40,9 @@ Discora reads `discora.toml` from your OS's normal config directory:
 movies_path = "/absolute/path/to/movies"
 tv_shows_path = "/absolute/path/to/tv-shows"
 storage_units = "decimal" # "decimal" (GB/TB) or "binary" (GiB/TiB)
+
+[rip]
+auto_select_single_drive = true
 
 [rip.destination]
 type = "local"
@@ -103,6 +108,11 @@ scanning, selection, and confirmation. Titles are shown longest first with their
 IDs, duration, size, source playlist/file, and name when available. Choose the
 correct title explicitly; the longest title may not be the main movie.
 
+With `rip.auto_select_single_drive = true` (the default), finding exactly one
+optical drive skips the drive picker and starts scanning that drive. Set it to
+`false` to always choose manually. Multiple drives still require selection;
+`--disc` selects an explicit MakeMKV drive index and takes priority.
+
 On the confirmation screen, **Enter starts ripping** and **Esc returns to title
 selection**. Going back preserves the filter and highlighted title without
 rescanning. Starting the rip launches a separate MakeMKV process, which opens
@@ -121,6 +131,15 @@ while browsing movies. The separate `mkdir` picker remains text-only.
 
 MakeMKV runs headlessly, using its current audio/subtitle preferences. Progress,
 elapsed time, an approximate ETA, and live logs are displayed during the rip.
+During the final ripping job, including disc opening and finalization, Enter,
+Esc, or Ctrl+C opens a full-screen cancellation question with **No selected**.
+The rip keeps running while you decide. Use arrows or Tab to select and Enter to
+confirm, N/Esc to continue ripping, or Y to cancel. Repeated Ctrl+C does not
+bypass confirmation. Confirming Ctrl+C cancellation exits after cleanup;
+confirming Enter/Esc cancellation shows the canceled result. If the job finishes
+while the question is open, its result appears automatically. Esc in the full log
+viewer closes logs first.
+
 The resulting file is named `Movie Title (Year)/Movie Title (Year).mkv`.
 This workflow handles one movie title per run; TV episodes and multiple-title
 ripping are not included.
@@ -128,9 +147,9 @@ ripping are not included.
 | Key | Action |
 | --- | --- |
 | Type | Search TMDB or filter the current selection list |
-| Up/Down, Enter | Select and continue; Enter on confirmation starts ripping |
-| Esc | Back/exit; during a task, cancel and wait for cleanup |
-| Ctrl+C | Cancel and exit after cleanup |
+| Up/Down, Enter | Select and continue; Enter on confirmation starts ripping; during ripping, Enter asks to cancel |
+| Esc | Back/exit; during ripping, confirm cancellation; during earlier tasks, cancel |
+| Ctrl+C | During ripping, confirm cancellation and exit; otherwise cancel and exit after cleanup |
 | F2 | Open/close the full log viewer |
 | L | Open/close logs while ripping or on the result screen |
 | Up/Down in logs | Scroll within the current page |
@@ -172,8 +191,8 @@ when another process creates one during the rip. Local publication uses a hard
 link and requires a filesystem that supports hard links. Windows SSHFS uses a server-side SFTP hard link because WinFsp does not
 expose hard links to Windows. Existing extras are left alone.
 
-On failure, Esc/Ctrl+C cancellation, or SIGTERM on Unix, the application stops and reaps
-MakeMKV, deletes only that attempt's temporary output, and retains the log. Cleanup
+On failure, confirmed rip cancellation, cancellation of earlier tasks, or SIGTERM
+on Unix, the application stops and reaps MakeMKV, deletes only that attempt's temporary output, and retains the log. Cleanup
 failures report the remaining path. Forced termination or power loss can leave
 staging directories behind; these are not automatically deleted on later runs.
 An empty movie directory may remain after a failed attempt.

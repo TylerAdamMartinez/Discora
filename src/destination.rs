@@ -20,12 +20,28 @@ use crate::{Result, rip::RunLog};
 #[cfg(not(windows))]
 use std::path::Path;
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RipSettings {
+    #[serde(default = "default_auto_select_single_drive")]
+    pub auto_select_single_drive: bool,
     #[serde(default)]
     pub destination: DestinationSettings,
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, toml::Value>,
+}
+
+fn default_auto_select_single_drive() -> bool {
+    true
+}
+
+impl Default for RipSettings {
+    fn default() -> Self {
+        Self {
+            auto_select_single_drive: true,
+            destination: DestinationSettings::default(),
+            extra: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

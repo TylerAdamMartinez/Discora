@@ -27,28 +27,42 @@ pub struct LibraryPaths {
 
 /// An explicit movie path always selects local output, including when the saved
 /// destination is remote. Utilities continue to resolve only local library paths.
-pub fn resolve_rip(overrides: LibraryPaths) -> Result<(Destination, StorageUnits)> {
+pub fn resolve_rip(overrides: LibraryPaths) -> Result<(Destination, StorageUnits, bool)> {
+    let config_path =
+        crate::platform::config_directory().map(|dir| dir.join("discora/discora.toml"));
+    resolve_rip_at(overrides, config_path.as_deref())
+}
+
+fn resolve_rip_at(
+    overrides: LibraryPaths,
+    config_path: Option<&Path>,
+) -> Result<(Destination, StorageUnits, bool)> {
     if let Some(path) = &overrides.movies_path {
         validate_path(path)?;
-        let units = crate::platform::config_directory()
-            .and_then(|dir| load_at(&dir.join("discora/discora.toml")).ok())
-            .and_then(|saved| saved.storage_units)
+        let saved = config_path
+            .and_then(|path| load_at(path).ok())
             .unwrap_or_default();
-        return Ok((Destination::Local(path.clone()), units));
+        return Ok((
+            Destination::Local(path.clone()),
+            saved.storage_units.unwrap_or_default(),
+            saved.rip.auto_select_single_drive,
+        ));
     }
-    let config_path = crate::platform::config_directory()
-        .ok_or("Cannot locate the user config directory; supply --movies-path")?
-        .join("discora/discora.toml");
-    if let Some(remote) = remote_at(&config_path)? {
+    let config_path =
+        config_path.ok_or("Cannot locate the user config directory; supply --movies-path")?;
+    let auto_select_single_drive = load_at(config_path)?.rip.auto_select_single_drive;
+    if let Some(remote) = remote_at(config_path)? {
         return Ok((
             Destination::Sshfs(remote),
-            load_at(&config_path)?.storage_units.unwrap_or_default(),
+            load_at(config_path)?.storage_units.unwrap_or_default(),
+            auto_select_single_drive,
         ));
     }
     let paths = resolve(overrides, false)?;
     Ok((
         Destination::Local(paths.movies_path.expect("resolved movie path")),
         paths.storage_units.unwrap_or_default(),
+        auto_select_single_drive,
     ))
 }
 
@@ -265,6 +279,51 @@ mod tests {
 
     fn no_prompt(_: &str, _: Option<&str>) -> Result<PathBuf> {
         panic!("unexpected setup prompt")
+    }
+
+    #[test]
+    fn single_drive_preference_defaults_loads_and_survives_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("discora.toml");
+        assert!(load_at(&config).unwrap().rip.auto_select_single_drive);
+        for (setting, expected) in [
+            ("", true),
+            ("auto_select_single_drive = true", true),
+            ("auto_select_single_drive = false", false),
+        ] {
+            fs::write(&config, format!("[rip]\n{setting}\n")).unwrap();
+            assert_eq!(
+                load_at(&config).unwrap().rip.auto_select_single_drive,
+                expected
+            );
+            let (_, _, automatic) =
+                resolve_rip_at(paths(Some(dir.path()), None), Some(&config)).unwrap();
+            assert_eq!(
+                automatic, expected,
+                "explicit movie path retains drive preference"
+            );
+            resolve_with_prompts(
+                LibraryPaths::default(),
+                true,
+                &config,
+                true,
+                |_, _| Ok(dir.path().to_path_buf()),
+                || Ok(StorageUnits::Decimal),
+            )
+            .unwrap();
+            assert_eq!(
+                load_at(&config).unwrap().rip.auto_select_single_drive,
+                expected
+            );
+        }
+        fs::write(&config, "[rip]\nauto_select_single_drive = 'yes'\n").unwrap();
+        assert!(load_at(&config).is_err());
+        // Explicit paths keep their existing best-effort behavior with invalid config.
+        assert!(
+            resolve_rip_at(paths(Some(dir.path()), None), Some(&config))
+                .unwrap()
+                .2
+        );
     }
 
     #[test]

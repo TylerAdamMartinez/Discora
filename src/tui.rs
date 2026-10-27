@@ -130,7 +130,15 @@ impl LogPage {
     }
 }
 
+struct CancelConfirmation {
+    yes_selected: bool,
+    quit_when_idle: bool,
+}
+
 struct App {
+    auto_select_single_drive: bool,
+    ripping: bool,
+    cancel_confirmation: Option<CancelConfirmation>,
     phase: Phase,
     query: String,
     filter: String,
@@ -184,6 +192,7 @@ pub fn run(
     destination: crate::destination::Destination,
     executable: Option<PathBuf>,
     units: crate::storage::StorageUnits,
+    auto_select_single_drive: bool,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("The rip command needs an interactive terminal".into());
@@ -202,7 +211,16 @@ pub fn run(
             let _ = log.write("sshfs", &error.to_string());
             eprintln!("Run log: {}", log.path.display());
         })?;
-    let result = run_mounted(disc, &mounted, token, makemkv, log, &terminated, units);
+    let result = run_mounted(
+        disc,
+        &mounted,
+        token,
+        makemkv,
+        log,
+        &terminated,
+        units,
+        auto_select_single_drive,
+    );
     let cleanup = mounted.close();
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
@@ -220,9 +238,11 @@ fn run_mounted(
     log: RunLog,
     terminated: &Arc<AtomicBool>,
     units: crate::storage::StorageUnits,
+    auto_select_single_drive: bool,
 ) -> Result<()> {
     let mut app = App::new(disc, mounted.root.clone(), token, makemkv, log);
     app.storage.units = units;
+    app.auto_select_single_drive = auto_select_single_drive;
     app.root_label = mounted.label.clone();
     app.remote = mounted.remote.clone();
     #[cfg(windows)]
@@ -263,6 +283,9 @@ fn run_mounted(
 impl App {
     fn new(disc: Option<u32>, root: PathBuf, token: String, makemkv: MakeMkv, log: RunLog) -> Self {
         Self {
+            auto_select_single_drive: true,
+            ripping: false,
+            cancel_confirmation: None,
             phase: Phase::Search,
             query: String::new(),
             filter: String::new(),
@@ -305,6 +328,8 @@ impl App {
     }
 
     fn start(&mut self, job: Job, operation: &str) {
+        self.ripping = matches!(&job, Job::Rip { .. });
+        self.cancel_confirmation = None;
         self.phase = Phase::Busy;
         self.operation = operation.into();
         self.status = operation.into();
@@ -409,6 +434,7 @@ impl App {
     }
 
     fn cancel(&mut self, quit_when_idle: bool) {
+        self.cancel_confirmation = None;
         self.canceled = true;
         self.quit_when_idle |= quit_when_idle;
         self.status =
@@ -512,6 +538,8 @@ impl App {
     }
 
     fn complete(&mut self, result: std::result::Result<Outcome, String>) {
+        self.ripping = false;
+        self.cancel_confirmation = None;
         match result {
             Ok(Outcome::Movies(movies)) => {
                 self.movies = movies;
@@ -546,8 +574,18 @@ impl App {
             }
             Ok(Outcome::Drives(drives)) => {
                 self.drives = drives;
-                self.phase = Phase::Drives;
-                self.status = "Select an optical drive with a disc inserted".into();
+                if self.auto_select_single_drive
+                    && self.drives.len() == 1
+                    && !self.canceled
+                    && !self.quit_when_idle
+                {
+                    let disc = self.drives[0].index;
+                    self.disc = Some(disc);
+                    self.start(Job::Titles(disc), "Scanning disc titles…");
+                } else {
+                    self.phase = Phase::Drives;
+                    self.status = "Select an optical drive with a disc inserted".into();
+                }
             }
             Ok(Outcome::Titles(titles)) => {
                 self.titles = titles;
@@ -590,6 +628,41 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(confirmation) = &mut self.cancel_confirmation {
+            let confirmed = match key.code {
+                KeyCode::Esc | KeyCode::Char('n' | 'N') => Some(false),
+                KeyCode::Char('y' | 'Y') => Some(true),
+                KeyCode::Enter => Some(confirmation.yes_selected),
+                KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+                    confirmation.yes_selected = !confirmation.yes_selected;
+                    None
+                }
+                _ => None,
+            };
+            if let Some(yes) = confirmed {
+                let quit_when_idle = confirmation.quit_when_idle;
+                self.cancel_confirmation = None;
+                if yes {
+                    self.cancel(quit_when_idle);
+                }
+            }
+            return;
+        }
+        if self.ripping
+            && self.phase == Phase::Busy
+            && !self.canceled
+            && (ctrl_c
+                || key.code == KeyCode::Enter
+                || (key.code == KeyCode::Esc && !self.log_view))
+        {
+            self.cancel_confirmation = Some(CancelConfirmation {
+                yes_selected: false,
+                quit_when_idle: ctrl_c,
+            });
+            return;
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.cancel(true);
             return;
@@ -774,6 +847,40 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        if let Some(confirmation) = &self.cancel_confirmation {
+            let choices = vec![
+                ListItem::new("(N)o — continue ripping"),
+                ListItem::new("(Y)es — cancel rip"),
+            ];
+            let mut state = ListState::default();
+            state.select(Some(usize::from(confirmation.yes_selected)));
+            let [question, choices_area, help] = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Min(2),
+                Constraint::Length(3),
+            ])
+            .areas(frame.area());
+            frame.render_widget(
+                Paragraph::new("Are you sure you want to cancel this rip?\nRipping continues while you decide.")
+                    .wrap(Wrap { trim: true })
+                    .block(Block::bordered().title("Cancel rip?")), question,
+            );
+            frame.render_stateful_widget(
+                List::new(choices)
+                    .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+                    .highlight_symbol("> "),
+                choices_area,
+                &mut state,
+            );
+            frame.render_widget(
+                Paragraph::new(
+                    "↑↓/←→/Tab: select · Enter: confirm\nN/Esc: continue ripping · Y: cancel rip",
+                )
+                .wrap(Wrap { trim: true }),
+                help,
+            );
+            return;
+        }
         let browsing_movies = self.phase == Phase::Movies && !self.log_view;
         let [header, context, content, progress, logs, footer] = Layout::vertical([
             Constraint::Length(3),
@@ -1031,8 +1138,12 @@ impl App {
             Paragraph::new(text).block(Block::bordered().title(title)),
             logs,
         );
-        let help = if self.log_view {
+        let help = if self.log_view && self.ripping && !self.canceled {
+            "F2/Esc: close logs · Enter/Ctrl+C: confirm cancellation"
+        } else if self.log_view {
             "F2/Esc: close logs · Ctrl+C: cancel and exit"
+        } else if self.ripping && !self.canceled {
+            "Enter/Esc/Ctrl+C: confirm cancellation · L/F2: full log"
         } else if self.phase == Phase::Busy {
             "Esc: cancel · L/F2: full log · Ctrl+C: cancel and exit"
         } else if self.phase == Phase::Confirm {
@@ -1360,6 +1471,7 @@ else:
         let movie: Media =
             serde_json::from_str(r#"{"id":1,"title":"Example","release_date":"2005-01-01"}"#)
                 .unwrap();
+        app.auto_select_single_drive = false;
         app.complete(Ok(Outcome::Movies(vec![movie])));
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         app.key(enter);
@@ -1429,6 +1541,278 @@ else:
                 .unwrap()
                 .ends_with("Example (2005)/Example (2005).mkv")
         );
+    }
+
+    fn idle_test_app(root: &std::path::Path) -> App {
+        App::new(
+            None,
+            root.to_owned(),
+            String::new(),
+            MakeMkv::new("/nonexistent".into()),
+            RunLog::create(root).unwrap(),
+        )
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn rip_confirmation_defaults_to_no_and_only_yes_cancels() {
+        let root = tempfile::tempdir().unwrap();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for trigger in [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            ctrl_c,
+        ] {
+            for answer in [
+                KeyCode::Enter,
+                KeyCode::Esc,
+                KeyCode::Char('n'),
+                KeyCode::Char('N'),
+                KeyCode::Char('y'),
+                KeyCode::Char('Y'),
+                KeyCode::Tab,
+            ] {
+                let mut app = idle_test_app(root.path());
+                app.phase = Phase::Busy;
+                app.ripping = true;
+                let cancel = Arc::new(AtomicBool::new(false));
+                app.worker = Some(Worker {
+                    cancel: cancel.clone(),
+                    handle: None,
+                });
+                app.key(trigger);
+                assert!(!app.cancel_confirmation.as_ref().unwrap().yes_selected);
+                assert!(!cancel.load(Ordering::Relaxed));
+                app.key(ctrl_c);
+                assert!(!cancel.load(Ordering::Relaxed));
+                press(&mut app, answer);
+                if answer == KeyCode::Tab {
+                    press(&mut app, KeyCode::Enter);
+                }
+                let yes = matches!(answer, KeyCode::Char('y' | 'Y') | KeyCode::Tab);
+                assert_eq!(cancel.load(Ordering::Relaxed), yes);
+                assert_eq!(app.canceled, yes);
+                assert_eq!(app.quit_when_idle, yes && trigger == ctrl_c);
+                assert!(app.cancel_confirmation.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_cancellation_reaps_real_worker_and_cleans_partial_output() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("rip.py");
+        std::fs::write(
+            &script,
+            r#"import os, sys, time
+from pathlib import Path
+Path(sys.argv[-1], 'partial.mkv').write_text('partial movie')
+Path(__file__).with_suffix('.ready').write_text(str(os.getpid()))
+while True:
+    time.sleep(0.01)
+"#,
+        )
+        .unwrap();
+        let python = crate::test_support::python();
+        for exit in [false, true] {
+            let ready = script.with_extension("ready");
+            if ready.exists() {
+                std::fs::remove_file(&ready).unwrap();
+            }
+            let mut app = idle_test_app(root.path());
+            app.makemkv =
+                MakeMkv::with_arguments(python.clone(), vec![script.clone().into_os_string()]);
+            let movie = root.path().join(if exit { "Exit" } else { "Stay" });
+            std::fs::create_dir_all(&movie).unwrap();
+            let extra = movie.join("extra.txt");
+            std::fs::write(&extra, "keep me").unwrap();
+            app.start(
+                Job::Rip {
+                    movie: movie.clone(),
+                    disc: 7,
+                    title: 3,
+                },
+                "Ripping…",
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "rip did not start: {}",
+                    app.status
+                );
+                app.poll();
+                thread::sleep(Duration::from_millis(5));
+            }
+            let pid = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+            let cancel = app.worker.as_ref().unwrap().cancel.clone();
+            assert!(app.ripping);
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Enter); // Default No keeps the process alive.
+            assert!(!cancel.load(Ordering::Relaxed));
+            assert!(crate::test_support::process_exists(pid));
+            if exit {
+                app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            } else {
+                press(&mut app, KeyCode::Esc);
+            }
+            press(&mut app, KeyCode::Char('Y'));
+            assert!(!app.quit, "must wait for cleanup before exiting");
+            wait_for_task(&mut app);
+            assert_eq!(app.quit, exit);
+            assert!(app.phase == Phase::Failed);
+            assert!(!crate::test_support::process_exists(pid));
+            assert!(app.log.path.exists());
+            let remaining: Vec<_> = std::fs::read_dir(&movie)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(remaining, vec![extra]);
+        }
+    }
+
+    #[test]
+    fn confirmation_keeps_polling_and_dismisses_on_completion_or_failure() {
+        let root = tempfile::tempdir().unwrap();
+        for succeeded in [false, true] {
+            let mut app = idle_test_app(root.path());
+            app.phase = Phase::Busy;
+            app.ripping = true;
+            let (tx, rx) = mpsc::sync_channel(4);
+            app.rx = Some(rx);
+            app.worker = Some(Worker {
+                cancel: Arc::new(AtomicBool::new(false)),
+                handle: None,
+            });
+            press(&mut app, KeyCode::Enter);
+            tx.send(Update::Event(Event::Progress { total: 1, max: 2 }))
+                .unwrap();
+            tx.send(Update::Event(Event::Log("still ripping".into())))
+                .unwrap();
+            app.poll();
+            assert_eq!(app.progress, Some(0.5));
+            assert_eq!(app.logs.back().unwrap(), "still ripping");
+            assert!(app.cancel_confirmation.is_some());
+            let result = if succeeded {
+                Ok(Outcome::Saved(root.path().join("movie.mkv")))
+            } else {
+                Err("rip failed".into())
+            };
+            tx.send(Update::Complete(result)).unwrap();
+            app.poll();
+            assert!(app.cancel_confirmation.is_none());
+            assert!(!app.ripping);
+            assert!(
+                app.phase
+                    == if succeeded {
+                        Phase::Done
+                    } else {
+                        Phase::Failed
+                    }
+            );
+            assert!(!app.canceled);
+        }
+    }
+
+    #[test]
+    fn confirmation_preserves_logs_and_renders_at_small_sizes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = idle_test_app(root.path());
+        app.phase = Phase::Busy;
+        app.ripping = true;
+        app.log_view = true;
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.log_view);
+        assert!(app.cancel_confirmation.is_none());
+        app.log_view = true;
+        press(&mut app, KeyCode::Enter);
+        for (width, height) in [(110, 30), (80, 24), (40, 12), (10, 5), (1, 1)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            if width >= 40 {
+                let buffer = terminal.backend().buffer();
+                let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(rendered.contains("(N)o — continue ripping"));
+                assert!(rendered.contains("(Y)es — cancel rip"));
+                assert!(!rendered.contains("Full log |"));
+                let selected = buffer
+                    .content
+                    .iter()
+                    .find(|cell| cell.symbol() == "N")
+                    .unwrap();
+                assert_eq!(selected.bg, Color::Cyan);
+            }
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(app.log_view);
+        assert!(!app.canceled);
+        app.log_view = false;
+        app.ripping = false;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.cancel_confirmation.is_none());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.canceled, "earlier busy tasks still cancel immediately");
+    }
+
+    #[test]
+    fn drive_selection_respects_preference_count_and_explicit_index() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("scan.py");
+        std::fs::write(
+            &script,
+            r#"import sys
+assert 'disc:7' in sys.argv
+print('TINFO:3,9,0,"1:30:00"')
+"#,
+        )
+        .unwrap();
+        let python = crate::test_support::python();
+        for enabled in [false, true] {
+            for count in 0..=2 {
+                let mut app = idle_test_app(root.path());
+                app.auto_select_single_drive = enabled;
+                app.makemkv =
+                    MakeMkv::with_arguments(python.clone(), vec![script.clone().into_os_string()]);
+                app.complete(Ok(Outcome::Drives(
+                    (0..count)
+                        .map(|i| Drive {
+                            index: 7 + i,
+                            name: "Drive".into(),
+                            disc: "Disc".into(),
+                        })
+                        .collect(),
+                )));
+                if enabled && count == 1 {
+                    assert_eq!(app.disc, Some(7));
+                    wait_for_task(&mut app);
+                    assert!(app.phase == Phase::Titles, "{}", app.status);
+                    assert_eq!(app.titles[0].id, 3);
+                } else {
+                    assert!(app.phase == Phase::Drives);
+                    assert!(app.worker.is_none());
+                }
+            }
+            let mut app = idle_test_app(root.path());
+            app.auto_select_single_drive = enabled;
+            app.forced_disc = Some(7);
+            app.makemkv =
+                MakeMkv::with_arguments(python.clone(), vec![script.clone().into_os_string()]);
+            app.complete(Ok(Outcome::Destination {
+                movie: serde_json::from_str(
+                    r#"{"id":1,"title":"Example","release_date":"2005-01-01"}"#,
+                )
+                .unwrap(),
+                destination: root.path().join("Example (2005)"),
+                exists: false,
+            }));
+            assert_eq!(app.disc, Some(7));
+            wait_for_task(&mut app);
+            assert!(app.phase == Phase::Titles, "{}", app.status);
+        }
     }
 
     #[test]
