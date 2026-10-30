@@ -23,6 +23,8 @@ use std::path::Path;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RipSettings {
     #[serde(default = "default_auto_select_single_drive")]
+    pub auto_select_runtime_match: bool,
+    #[serde(default = "default_auto_select_single_drive")]
     pub auto_select_single_drive: bool,
     #[serde(default)]
     pub destination: DestinationSettings,
@@ -38,6 +40,7 @@ impl Default for RipSettings {
     fn default() -> Self {
         Self {
             auto_select_single_drive: true,
+            auto_select_runtime_match: true,
             destination: DestinationSettings::default(),
             extra: Default::default(),
         }

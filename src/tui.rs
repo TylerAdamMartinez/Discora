@@ -231,6 +231,7 @@ pub fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_mounted(
     disc: Option<u32>,
     mounted: &crate::destination::MountedDestination,
@@ -362,7 +363,30 @@ impl App {
                                 movies.into_iter().filter(|m| m.year().is_some()).collect(),
                             ))
                         }
-                        Job::CheckDestination { movie, destination } => {
+                        Job::CheckDestination {
+                            mut movie,
+                            destination,
+                        } => {
+                            std::fs::create_dir_all(&destination)?;
+                            let probe = tempfile::Builder::new()
+                                .prefix(".discora-check-")
+                                .tempdir_in(&destination)?;
+                            let source = probe.path().join("source");
+                            let target = probe.path().join("linked");
+                            std::fs::write(&source, b"destination probe")?;
+                            #[cfg(windows)]
+                            if let Some(publisher) = &publisher {
+                                publisher.publish(&source, &target, &worker_cancel)?;
+                            } else {
+                                std::fs::File::open(&source)?.sync_all()?;
+                                std::fs::hard_link(&source, &target)?;
+                            }
+                            #[cfg(unix)]
+                            {
+                                std::fs::File::open(&source)?.sync_all()?;
+                                std::fs::hard_link(&source, &target)?;
+                            }
+                            probe.close()?;
                             let path = crate::files::named_mkv(&destination)?;
                             #[cfg(windows)]
                             let exists = if let Some(publisher) = &publisher {
@@ -373,6 +397,14 @@ impl App {
                             #[cfg(unix)]
                             let exists = destination_exists(&path)?;
                             crate::makemkv::check_cancel(&worker_cancel)?;
+                            if !exists
+                                && crate::config::auto_select_runtime_match()
+                                && let Err(error) =
+                                    crate::metadata::load_runtime(&mut movie, &token)
+                            {
+                                let _ =
+                                    log.write("runtime", &format!("Runtime unavailable: {error}"));
+                            }
                             Ok(Outcome::Destination {
                                 movie,
                                 destination,
@@ -591,9 +623,51 @@ impl App {
             }
             Ok(Outcome::Titles(titles)) => {
                 self.titles = titles;
+                if let Some(runtime) = self
+                    .movie
+                    .as_ref()
+                    .and_then(|movie| movie.runtime)
+                    .and_then(|m| m.checked_mul(60))
+                {
+                    let matches: Vec<_> = self
+                        .titles
+                        .iter()
+                        .filter(|title| {
+                            title
+                                .chapters
+                                .trim()
+                                .parse::<u64>()
+                                .is_ok_and(|count| count > 0)
+                                && title.seconds() > 0
+                                && title.seconds().abs_diff(runtime) <= 120
+                        })
+                        .collect();
+                    if matches.len() == 1 {
+                        let title = matches[0].id;
+                        let _ = self.log.write("runtime", &format!("Automatically selected title {title}: {} seconds vs TMDB {runtime} seconds", matches[0].seconds()));
+                        self.title = Some(title);
+                        if let (Some(movie), Some(disc)) = (self.destination.clone(), self.disc) {
+                            self.start(
+                                Job::Rip { movie, disc, title },
+                                "Opening disc for ripping…",
+                            );
+                            return;
+                        }
+                    }
+                }
                 self.phase = Phase::Titles;
-                self.status =
-                    "Select one title. Duration alone does not identify the correct movie.".into();
+                self.status = format!(
+                    "Select one title. TMDB runtime: {:?} min. Forum: https://forum.makemkv.com/forum/search.php?keywords={}",
+                    self.movie.as_ref().and_then(|m| m.runtime),
+                    self.movie
+                        .as_ref()
+                        .map(|m| m
+                            .to_string()
+                            .bytes()
+                            .map(|b| format!("%{b:02X}"))
+                            .collect::<String>())
+                        .unwrap_or_default()
+                );
             }
             Ok(Outcome::Saved(path)) => {
                 self.saved = Some(path);
@@ -1539,7 +1613,7 @@ else:
         app.key(enter);
         assert!(app.phase == Phase::Confirm);
         assert_eq!(app.title, Some(1));
-        assert!(!app.destination.as_ref().unwrap().exists());
+        assert!(app.destination.as_ref().unwrap().is_dir());
         // Back navigation preserves both the highlighted row and an active filter.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.selected, 1);

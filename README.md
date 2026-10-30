@@ -43,6 +43,7 @@ storage_units = "decimal" # "decimal" (GB/TB) or "binary" (GiB/TiB)
 
 [rip]
 auto_select_single_drive = true
+auto_select_runtime_match = true
 
 [rip.destination]
 type = "local"
@@ -351,3 +352,15 @@ leaving unrelated mounts intact. If publication loses its acknowledgement, inspe
 the reported final path before retrying. Repeat with spaces in the key, library,
 and executable paths. These live checks require a Windows machine and optical
 drive; the fake-process suite does not certify a real WinFsp installation.
+
+After movie selection, Discora creates the movie directory and tests writing,
+syncing, and hard-link publication before discovering or scanning the disc.
+An empty movie directory may remain if you cancel.
+
+By default, exactly one scanned title with a positive chapter count within two minutes of the selected
+movie's TMDB runtime starts ripping automatically, without confirmation.
+Set `rip.auto_select_runtime_match = false` to always choose manually.
+Missing runtime, lookup failures, and multiple matching titles keep manual
+selection and confirmation. Runtime matching is a heuristic and may select
+a different edition. The title-selection status includes a MakeMKV forum
+search URL for investigating ambiguous discs.

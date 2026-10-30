@@ -168,6 +168,14 @@ pub fn resolve(overrides: LibraryPaths, need_tv: bool) -> Result<LibraryPaths> {
     )
 }
 
+pub fn auto_select_runtime_match() -> bool {
+    crate::platform::config_directory()
+        .and_then(|dir| load_at(&dir.join("discora/discora.toml")).ok())
+        .unwrap_or_default()
+        .rip
+        .auto_select_runtime_match
+}
+
 #[cfg(test)]
 fn resolve_at(
     overrides: LibraryPaths,

@@ -14,6 +14,8 @@ struct SearchResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Media {
     id: u64,
+    #[serde(default)]
+    pub runtime: Option<u64>,
     title: Option<String>,
     name: Option<String>,
     release_date: Option<String>,
@@ -140,6 +142,23 @@ pub fn movie_destination(root: &Path, movie: &Media) -> Result<PathBuf> {
     }
     let year = movie.year().ok_or("Selected title has no release year")?;
     Ok(root.join(format!("{title} ({year})")))
+}
+
+pub fn load_runtime(movie: &mut Media, token: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Details {
+        runtime: Option<u64>,
+    }
+    let details = Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?
+        .get(format!("https://api.themoviedb.org/3/movie/{}", movie.id))
+        .bearer_auth(token)
+        .send()?
+        .error_for_status()?
+        .json::<Details>()?;
+    movie.runtime = details.runtime.filter(|minutes| *minutes > 0);
+    Ok(())
 }
 
 #[cfg(test)]
