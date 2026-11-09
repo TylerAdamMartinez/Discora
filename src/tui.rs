@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     env,
     fs::File,
-    io::{self, BufRead, BufReader, IsTerminal},
+    io::{self, BufRead, BufReader, IsTerminal, Write},
     path::PathBuf,
     sync::{
         Arc,
@@ -178,6 +178,7 @@ struct App {
     quit: bool,
     saved: Option<PathBuf>,
     saved_at: Option<Instant>,
+    last_completion_beep: Option<Instant>,
 }
 
 impl Drop for App {
@@ -327,6 +328,7 @@ impl App {
             quit: false,
             saved: None,
             saved_at: None,
+            last_completion_beep: None,
         }
     }
 
@@ -492,6 +494,11 @@ impl App {
             self.poll();
             if self.quit {
                 break;
+            }
+            if self.completion_beep_due(Instant::now()) {
+                let mut output = io::stdout().lock();
+                // A notification failure must not fail a successful rip.
+                let _ = output.write_all(b"\x07").and_then(|()| output.flush());
             }
             terminal.draw(|frame| self.draw(frame))?;
             if event::poll(Duration::from_millis(50))?
@@ -672,6 +679,7 @@ impl App {
             Ok(Outcome::Saved(path)) => {
                 self.saved = Some(path);
                 self.saved_at = Some(Instant::now());
+                self.last_completion_beep = None;
                 self.phase = Phase::Done;
                 self.progress = Some(1.0);
                 self.status = "Rip complete; movie file named and partial output cleaned up".into();
@@ -1244,6 +1252,20 @@ impl App {
         }
     }
 
+    fn completion_beep_due(&mut self, now: Instant) -> bool {
+        if self.phase != Phase::Done || self.quit {
+            return false;
+        }
+        if self
+            .last_completion_beep
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(5))
+        {
+            self.last_completion_beep = Some(now);
+            return true;
+        }
+        false
+    }
+
     fn saved_screen_inverted(&self, now: Instant) -> bool {
         self.phase == Phase::Done
             && self
@@ -1299,6 +1321,15 @@ mod tests {
         );
         app.complete(Ok(Outcome::Saved(temp.path().join("movie.mkv"))));
         let start = app.saved_at.unwrap();
+        assert!(app.completion_beep_due(start));
+        assert!(!app.completion_beep_due(start));
+        assert!(!app.completion_beep_due(start + Duration::from_millis(4999)));
+        assert!(app.completion_beep_due(start + Duration::from_secs(5)));
+        assert!(!app.completion_beep_due(start + Duration::from_secs(5)));
+        app.quit = true;
+        assert!(!app.completion_beep_due(start + Duration::from_secs(10)));
+        app.quit = false;
+
         for (millis, inverted) in [
             (0, false),
             (999, false),
@@ -1312,6 +1343,7 @@ mod tests {
             );
         }
         app.phase = Phase::Failed;
+        assert!(!app.completion_beep_due(start + Duration::from_secs(10)));
         assert!(!app.saved_screen_inverted(start + Duration::from_secs(1)));
     }
 

@@ -137,7 +137,7 @@ pub struct Publisher {
     client: Arc<Mutex<Client>>,
 }
 impl Publisher {
-    fn remote_path(&self, path: &Path) -> Result<String> {
+    pub(crate) fn remote_path(&self, path: &Path) -> Result<String> {
         let relative = path.strip_prefix(&self.root)?;
         let parts = relative
             .components()

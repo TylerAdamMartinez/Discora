@@ -364,3 +364,7 @@ Missing runtime, lookup failures, and multiple matching titles keep manual
 selection and confirmation. Runtime matching is a heuristic and may select
 a different edition. The title-selection status includes a MakeMKV forum
 search URL for investigating ambiguous discs.
+
+After a successful save, the completion screen flashes and rings the terminal bell
+immediately and every five seconds until dismissed. Audible playback depends on
+your terminal bell settings and system volume.

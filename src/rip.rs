@@ -74,7 +74,7 @@ pub struct Attempt {
 impl Attempt {
     pub fn create(movie: &Path) -> Result<Self> {
         fs::create_dir_all(movie).map_err(|error| {
-            format!("Cannot create movie directory {}: {error}", movie.display())
+            format!("Cannot create movie directory {}: create_dir_all failed: {error} (kind={:?}, raw_os_error={:?})", movie.display(), error.kind(), error.raw_os_error())
         })?;
         let destination = named_mkv(movie)?;
         match fs::symlink_metadata(&destination) {
@@ -217,6 +217,42 @@ pub fn run(
             "Preparing movie directory {} (disc {disc}, title {title})",
             output.movie.display()
         ),
+    )?;
+    #[cfg(windows)]
+    if let Some(publisher) = output.publisher {
+        log.write(
+            "staging",
+            &format!(
+                "Remote movie directory: {}",
+                publisher.remote_path(output.movie)?
+            ),
+        )?;
+    }
+    // Diagnostic metadata reads must not replace or prevent the actual operation.
+    for path in [Some(output.movie), output.movie.parent()]
+        .into_iter()
+        .flatten()
+    {
+        let diagnostic = match fs::metadata(path) {
+            Ok(metadata) => format!(
+                "is_dir={}, readonly={}",
+                metadata.is_dir(),
+                metadata.permissions().readonly()
+            ),
+            Err(error) => format!(
+                "metadata failed: {error} (kind={:?}, raw_os_error={:?})",
+                error.kind(),
+                error.raw_os_error()
+            ),
+        };
+        let _ = log.write(
+            "staging",
+            &format!("Before create_dir_all: {}: {diagnostic}", path.display()),
+        );
+    }
+    log.write(
+        "staging",
+        &format!("Calling create_dir_all for {}", output.movie.display()),
     )?;
     let attempt = Attempt::create(output.movie)?;
     let result = (|| {
