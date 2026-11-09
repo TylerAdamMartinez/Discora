@@ -73,9 +73,16 @@ pub struct Attempt {
 
 impl Attempt {
     pub fn create(movie: &Path) -> Result<Self> {
-        fs::create_dir_all(movie).map_err(|error| {
+        match fs::metadata(movie) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(format!("Movie path is not a directory: {}", movie.display()).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(movie).map_err(|error| {
             format!("Cannot create movie directory {}: create_dir_all failed: {error} (kind={:?}, raw_os_error={:?})", movie.display(), error.kind(), error.raw_os_error())
-        })?;
+                })?;
+            }
+            Err(error) => return Err(format!("Cannot inspect movie directory {}: metadata failed: {error} (kind={:?}, raw_os_error={:?})", movie.display(), error.kind(), error.raw_os_error()).into()),
+        }
         let destination = named_mkv(movie)?;
         match fs::symlink_metadata(&destination) {
             Ok(_) => {
@@ -252,7 +259,10 @@ pub fn run(
     }
     log.write(
         "staging",
-        &format!("Calling create_dir_all for {}", output.movie.display()),
+        &format!(
+            "Ensuring movie directory exists: {}",
+            output.movie.display()
+        ),
     )?;
     let attempt = Attempt::create(output.movie)?;
     let result = (|| {
@@ -289,6 +299,33 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movie_directory_preparation_allows_staging_file_creation_and_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let movie = root.path().join("Movie (2007)");
+        for _ in 0..2 {
+            let attempt = Attempt::create(&movie).unwrap();
+            let file = attempt.path().join("output.mkv");
+            fs::write(&file, b"movie data").unwrap();
+            assert_eq!(fs::read(file).unwrap(), b"movie data");
+            attempt.close().unwrap();
+            assert!(movie.is_dir());
+        }
+    }
+
+    #[test]
+    fn movie_directory_preparation_rejects_existing_file() {
+        let root = tempfile::tempdir().unwrap();
+        let movie = root.path().join("Movie (2007)");
+        fs::write(&movie, b"preserve").unwrap();
+        let error = match Attempt::create(&movie) {
+            Ok(_) => panic!("a file cannot be a movie directory"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("Movie path is not a directory"));
+        assert_eq!(fs::read(movie).unwrap(), b"preserve");
+    }
 
     #[test]
     fn application_entries_preserve_appended_child_diagnostics() {
